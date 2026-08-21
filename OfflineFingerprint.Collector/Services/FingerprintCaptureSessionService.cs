@@ -1,44 +1,32 @@
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
-using System.Text.Json;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 
 namespace OfflineFingerprint.Collector.Services;
 
 public sealed class FingerprintCaptureSessionService
 {
     private readonly HttpClient _http;
-    private readonly string _baseUrl;
-    private readonly string _operationPath;
+    private readonly string _agentUrl;
     private readonly ConcurrentDictionary<Guid, Session> _sessions = new();
 
     public FingerprintCaptureSessionService(HttpClient http, IConfiguration config)
     {
         _http = http;
-        _baseUrl = config["Futronic:BaseUrl"] ?? "http://127.0.0.1:15270";
-        _operationPath = config["Futronic:OperationPath"] ?? "/fpoperation";
+        _agentUrl = config["Futronic:LiveAgentBaseUrl"] ?? "http://127.0.0.1:15271";
         _http.Timeout = TimeSpan.FromSeconds(5);
     }
 
     public async Task<Guid> StartAsync(CancellationToken ct)
     {
-        if (_sessions.Values.Any(x => x.Status is "starting" or "inprogress"))
+        if (_sessions.Values.Any(x => !x.Done))
             throw new InvalidOperationException("A fingerprint capture is already in progress.");
 
-        using var response = await _http.PostAsJsonAsync(
-            _baseUrl + _operationPath,
-            new { operation = "capture", lfd = "no", invert = "yes" },
-            ct);
+        using var response = await _http.PostAsync($"{_agentUrl}/device/open", null, ct);
         response.EnsureSuccessStatusCode();
 
-        using var doc = await JsonDocument.ParseAsync(
-            await response.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
-        var root = doc.RootElement;
-        string operationId = GetString(root, "id") ?? throw new InvalidOperationException("Bridge returned no operation id.");
-        int width = GetInt(root, "devwidth") ?? 320;
-        int height = GetInt(root, "devheight") ?? 480;
-
         Guid sessionId = Guid.NewGuid();
-        _sessions[sessionId] = new Session(sessionId, operationId, width, height);
+        _sessions[sessionId] = new Session(sessionId);
         return sessionId;
     }
 
@@ -47,53 +35,32 @@ public sealed class FingerprintCaptureSessionService
         if (!_sessions.TryGetValue(sessionId, out var session))
             throw new KeyNotFoundException("Capture session not found.");
 
-        using var stateResponse = await _http.GetAsync(
-            $"{_baseUrl}{_operationPath}/{session.OperationId}", ct);
-        stateResponse.EnsureSuccessStatusCode();
-        using var stateDoc = await JsonDocument.ParseAsync(
-            await stateResponse.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
-        var root = stateDoc.RootElement;
+        if (session.Done)
+            return Snapshot(session);
 
-        session.Status = GetString(root, "state") ?? session.Status;
-        session.StatusMessage = GetString(root, "status") ?? session.StatusMessage;
-        session.Width = GetInt(root, "devwidth") ?? session.Width;
-        session.Height = GetInt(root, "devheight") ?? session.Height;
+        bool fingerPresent = await ReadFingerPresentAsync(ct);
+        if (fingerPresent) session.HadFinger = true;
 
-        try
+        if (!session.HadFinger || fingerPresent)
         {
-            using var imageResponse = await _http.GetAsync(
-                $"{_baseUrl}{_operationPath}/{session.OperationId}/image", ct);
-            if (imageResponse.IsSuccessStatusCode)
+            byte[]? png = await ReadCurrentPngAsync(ct);
+            if (png is not null)
             {
-                byte[] gray = await imageResponse.Content.ReadAsByteArrayAsync(ct);
-                if (gray.Length == session.Width * session.Height)
-                {
-                    session.LatestGray = gray;
-                    session.LastFrameHash = Convert.ToHexString(SHA256.HashData(gray)).ToLowerInvariant();
-                }
+                DecodePngToGray(png, out var gray, out var width, out var height);
+                session.LatestGray = gray;
+                session.Width = width;
+                session.Height = height;
+                session.LastPng = png;
             }
         }
-        catch { }
 
-        bool done = string.Equals(session.Status, "done", StringComparison.OrdinalIgnoreCase);
-        bool success = string.Equals(session.StatusMessage, "success", StringComparison.OrdinalIgnoreCase);
+        if (session.HadFinger && !fingerPresent)
+        {
+            session.Done = session.LatestGray is { Length: > 0 };
+            if (!session.Done) session.Error = "Fingerprint frame was not received.";
+        }
 
-        if (done && !success)
-            session.Error = "Fingerprint capture failed.";
-
-        string? imageBase64 = session.LatestGray is { Length: > 0 }
-            ? Convert.ToBase64String(PngEncoder.EncodeGrayscale(session.LatestGray, session.Width, session.Height))
-            : null;
-
-        return new PreviewSnapshot(
-            session.Id,
-            done ? (success ? "done" : "failed") : "inprogress",
-            session.Width,
-            session.Height,
-            imageBase64,
-            session.LatestGray is { Length: > 0 },
-            session.LastFrameHash,
-            session.Error);
+        return Snapshot(session);
     }
 
     public async Task<CapturedImage> ConfirmAsync(Guid sessionId, CancellationToken ct)
@@ -101,9 +68,8 @@ public sealed class FingerprintCaptureSessionService
         if (!_sessions.TryGetValue(sessionId, out var session))
             throw new KeyNotFoundException("Capture session not found.");
 
-        var snapshot = await PollAsync(sessionId, ct);
-        if (snapshot.Status != "done" || session.LatestGray is not { Length: > 0 })
-            throw new InvalidOperationException("Capture is not complete yet.");
+        if (!session.Done || session.LatestGray is not { Length: > 0 })
+            throw new InvalidOperationException("Lift your finger after a live frame has been captured, then confirm.");
 
         _sessions.TryRemove(sessionId, out _);
         return new CapturedImage(session.LatestGray, session.Width, session.Height);
@@ -111,55 +77,81 @@ public sealed class FingerprintCaptureSessionService
 
     public async Task CancelAsync(Guid sessionId, CancellationToken ct)
     {
-        if (!_sessions.TryRemove(sessionId, out var session)) return;
+        if (!_sessions.TryRemove(sessionId, out _)) return;
+        try { await _http.PostAsync($"{_agentUrl}/device/close", null, ct); } catch { }
+    }
+
+    private async Task<bool> ReadFingerPresentAsync(CancellationToken ct)
+    {
         try
         {
-            await _http.PutAsync($"{_baseUrl}{_operationPath}/{session.OperationId}/cancel", null, ct);
+            var status = await _http.GetFromJsonAsync<AgentStatus>($"{_agentUrl}/scanner/status", ct);
+            return status?.FingerPresent == true;
         }
-        catch { }
-    }
-
-    private static string? GetString(JsonElement root, string property)
-    {
-        if (!root.TryGetProperty(property, out var element)) return null;
-        return element.ValueKind switch
+        catch
         {
-            JsonValueKind.String => element.GetString(),
-            JsonValueKind.Number => element.ToString(),
-            _ => null
-        };
+            return false;
+        }
     }
 
-    private static int? GetInt(JsonElement root, string property)
+    private async Task<byte[]?> ReadCurrentPngAsync(CancellationToken ct)
     {
-        if (!root.TryGetProperty(property, out var element)) return null;
-        if (element.ValueKind == JsonValueKind.Number && element.TryGetInt32(out int n)) return n;
-        if (element.ValueKind == JsonValueKind.String && int.TryParse(element.GetString(), out n)) return n;
-        return null;
+        try
+        {
+            using var response = await _http.GetAsync($"{_agentUrl}/image", ct);
+            if (!response.IsSuccessStatusCode) return null;
+            return await response.Content.ReadAsByteArrayAsync(ct);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
-    private sealed class Session(Guid id, string operationId, int width, int height)
+    private static PreviewSnapshot Snapshot(Session session)
+    {
+        string? base64 = session.LastPng is { Length: > 0 }
+            ? Convert.ToBase64String(session.LastPng)
+            : null;
+
+        return new PreviewSnapshot(
+            session.Id,
+            session.Done ? "done" : "inprogress",
+            session.Width,
+            session.Height,
+            base64,
+            session.LastPng is { Length: > 0 },
+            session.Error);
+    }
+
+    private static void DecodePngToGray(byte[] png, out byte[] gray, out int width, out int height)
+    {
+        using Image<L8> image = Image.Load<L8>(png);
+        width = image.Width;
+        height = image.Height;
+        gray = new byte[width * height];
+        for (int y = 0; y < height; y++)
+        {
+            var row = image.GetPixelRowSpan(y);
+            for (int x = 0; x < width; x++)
+                gray[y * width + x] = row[x].PackedValue;
+        }
+    }
+
+    private sealed class Session(Guid id)
     {
         public Guid Id { get; } = id;
-        public string OperationId { get; } = operationId;
-        public int Width { get; set; } = width;
-        public int Height { get; set; } = height;
-        public string Status { get; set; } = "starting";
-        public string StatusMessage { get; set; } = "";
+        public int Width { get; set; } = 320;
+        public int Height { get; set; } = 480;
+        public bool HadFinger { get; set; }
+        public bool Done { get; set; }
         public byte[]? LatestGray { get; set; }
-        public string? LastFrameHash { get; set; }
+        public byte[]? LastPng { get; set; }
         public string? Error { get; set; }
     }
 
-    public sealed record PreviewSnapshot(
-        Guid SessionId,
-        string Status,
-        int Width,
-        int Height,
-        string? PngBase64,
-        bool HasImage,
-        string? FrameHash,
-        string? Error);
+    private sealed record AgentStatus(bool Ready, int Width, int Height, int ImageSize, bool FingerPresent, DateTimeOffset LastFrame);
 
-    public sealed record CapturedImage(byte[] GrayBytes, int Width, int Height);
+    public sealed record PreviewSnapshot(Guid SessionId,string Status,int Width,int Height,string? PngBase64,bool HasImage,string? Error);
+    public sealed record CapturedImage(byte[] GrayBytes,int Width,int Height);
 }
