@@ -36,14 +36,11 @@
     const wheel = (e) => {
       e.preventDefault();
       e.stopImmediatePropagation();
-
       const rect = box.getBoundingClientRect();
       const mouseX = e.clientX - rect.left - rect.width / 2;
       const mouseY = e.clientY - rect.top - rect.height / 2;
       const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale * (e.deltaY < 0 ? STEP : 1 / STEP)));
       if (next === scale) return;
-
-      // Keep the exact image coordinate under the mouse fixed under the mouse.
       const imageX = (mouseX - panX) / scale;
       const imageY = (mouseY - panY) / scale;
       panX = mouseX - imageX * next;
@@ -95,13 +92,55 @@
     box.addEventListener('pointerup', pointerUp, { capture: true });
     box.addEventListener('pointercancel', pointerUp, { capture: true });
     box.addEventListener('dblclick', doubleClick, { capture: true });
-
     const observer = new MutationObserver(() => reset());
     observer.observe(box, { childList: true, subtree: false });
     apply(false);
   }
 
-  const scan = () => document.querySelectorAll('.zoom-box').forEach(setup);
+  function setupUiEnhancements() {
+    const styleId = 'fp-ui-enhancer-style';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        .collection-message{min-width:220px!important;max-width:360px!important;height:38px!important;font-size:14px!important}
+        .finger-cell.has-images.fp-save-pulse{animation:fp-save-cell .48s ease-out}
+        @keyframes fp-save-cell{0%{transform:scale(.94)}55%{transform:scale(1.05)}100%{transform:scale(1)}}
+        .gallery-item.fp-new-save{animation:fp-save-gallery .5s cubic-bezier(.2,.8,.2,1)}
+        @keyframes fp-save-gallery{0%{opacity:0;transform:translateY(-18px) scale(.97)}65%{opacity:1;transform:translateY(2px) scale(1.01)}100%{opacity:1;transform:translateY(0) scale(1)}}
+      `;
+      document.head.appendChild(style);
+    }
+    document.querySelectorAll('.finger-cell').forEach(btn => {
+      if (btn.dataset.fpTableEnhance === '1') return;
+      btn.dataset.fpTableEnhance = '1';
+      btn.addEventListener('click', e => {
+        const scannerIsOn = !!document.querySelector('.scanner-toggle.on');
+        if (!scannerIsOn) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          btn.classList.add('fp-disabled-cell');
+          window.setTimeout(() => btn.classList.remove('fp-disabled-cell'), 220);
+        }
+      }, {capture:true});
+    });
+    document.querySelectorAll('.gallery-scroll').forEach(scroll => {
+      const items = Array.from(scroll.querySelectorAll('.gallery-item'));
+      const signature = items.map(x => x.textContent || '').join('|');
+      if (scroll.dataset.fpGallerySignature === signature) return;
+      scroll.dataset.fpGallerySignature = signature;
+      if (items.length > 0) {
+        const fresh = items[0];
+        fresh.classList.add('fp-new-save');
+        window.setTimeout(() => fresh.classList.remove('fp-new-save'), 650);
+      }
+    });
+  }
+
+  const scan = () => {
+    document.querySelectorAll('.zoom-box').forEach(setup);
+    setupUiEnhancements();
+  };
   scan();
-  new MutationObserver(scan).observe(document.body, { childList: true, subtree: true });
+  new MutationObserver(scan).observe(document.body, {childList:true,subtree:true});
 })();
