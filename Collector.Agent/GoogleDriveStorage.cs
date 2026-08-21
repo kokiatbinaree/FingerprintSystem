@@ -75,11 +75,48 @@ public sealed class GoogleDriveStorage
             Parents = new List<string> { folder },
             MimeType = "text/plain"
         };
-        var request = service.Files.Create(file, stream, "text/plain");
-        request.Fields = "id,name,webViewLink,parents";
+        return await UploadStreamAsync(service, folder, file, stream, "text/plain", cancellationToken);
+    }
+
+    public async Task<object> UploadPngAsync(byte[] png, string fileName, CancellationToken cancellationToken = default)
+    {
+        if (png.Length == 0) throw new ArgumentException("PNG data is empty.", nameof(png));
+        if (string.IsNullOrWhiteSpace(fileName)) throw new ArgumentException("File name is required.", nameof(fileName));
+        if (!fileName.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) fileName += ".png";
+
+        var service = await GetDriveAsync(cancellationToken);
+        var folder = await EnsureFolderAsync(service, "FingerprintSystem-Test", null, cancellationToken);
+        await using var stream = new MemoryStream(png, writable: false);
+        var file = new DriveFile
+        {
+            Name = fileName,
+            Parents = new List<string> { folder },
+            MimeType = "image/png"
+        };
+        return await UploadStreamAsync(service, folder, file, stream, "image/png", cancellationToken);
+    }
+
+    private static async Task<object> UploadStreamAsync(
+        DriveService service,
+        string folderId,
+        DriveFile file,
+        Stream stream,
+        string mimeType,
+        CancellationToken cancellationToken)
+    {
+        var request = service.Files.Create(file, stream, mimeType);
+        request.Fields = "id,name,webViewLink,parents,mimeType,size";
         await request.UploadAsync(cancellationToken);
         var uploaded = request.ResponseBody ?? throw new InvalidOperationException("Google Drive ไม่ส่งผลลัพธ์กลับมา");
-        return new { uploaded.Id, uploaded.Name, uploaded.WebViewLink };
+        return new
+        {
+            uploaded.Id,
+            uploaded.Name,
+            uploaded.WebViewLink,
+            uploaded.MimeType,
+            uploaded.Size,
+            FolderId = folderId
+        };
     }
 
     private static async Task<string> EnsureFolderAsync(DriveService service, string name, string? parentId, CancellationToken cancellationToken)
