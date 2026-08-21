@@ -60,6 +60,7 @@ app.MapPost("/capture", (FutronicScanner scanner) =>
 });
 
 app.MapGet("/drive/status", (GoogleDriveStorage drive) => Results.Ok(drive.GetStatus()));
+
 app.MapPost("/drive/test-upload", async (GoogleDriveStorage drive, CancellationToken cancellationToken) =>
 {
     try
@@ -70,6 +71,22 @@ app.MapPost("/drive/test-upload", async (GoogleDriveStorage drive, CancellationT
     catch (Exception ex)
     {
         return Results.Problem(detail: ex.Message, statusCode: 500, title: "Google Drive test failed");
+    }
+});
+
+app.MapPost("/drive/upload-current-image", async (FutronicScanner scanner, GoogleDriveStorage drive, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var frame = scanner.GetCurrentFrame();
+        if (frame is null) return Results.BadRequest(new { ok = false, error = "No fingerprint frame available." });
+        string fileName = $"fingerprint-test-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}.png";
+        var result = await drive.UploadPngAsync(frame.Png, fileName, cancellationToken);
+        return Results.Ok(new { ok = true, result });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(detail: ex.Message, statusCode: 500, title: "Google Drive PNG upload failed");
     }
 });
 
