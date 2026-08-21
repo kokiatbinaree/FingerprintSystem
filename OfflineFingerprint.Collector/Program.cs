@@ -11,7 +11,10 @@ builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configurati
 builder.Services.AddSingleton<LocalKeyService>();
 builder.Services.AddSingleton<TokenService>();
 builder.Services.AddHttpClient<FutronicBridgeService>();
-builder.Services.AddHttpClient<FingerprintCaptureSessionService>();
+builder.Services.AddSingleton<FingerprintCaptureSessionService>(sp =>
+    new FingerprintCaptureSessionService(
+        new HttpClient { Timeout = TimeSpan.FromSeconds(5) },
+        sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton<FingerprintStorageService>();
 string[] origins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? ["http://127.0.0.1:5173", "http://localhost:5173"];
 builder.Services.AddCors(o => o.AddPolicy("Web", p => p.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod()));
@@ -89,20 +92,16 @@ app.MapGet("/api/scanner/status", async (FutronicBridgeService bridge, HttpReque
     return Results.Ok(new { ready = await bridge.PingAsync(CancellationToken.None) });
 });
 
-// Legacy one-shot preview: captures and returns the final frame without saving.
 app.MapPost("/api/capture/preview", async (CaptureRequest req, FutronicBridgeService bridge, HttpRequest http, TokenService tokens, CancellationToken ct) =>
 {
     if (!TryAuth(http, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
-    string[] fingers = ["L1","L2","L3","L4","L5","R1","R2","R3","R4","R5"];
-    string[] positions = ["left","center","right"];
-    if (!fingers.Contains(req.FingerCode)) return Results.BadRequest("Invalid finger code.");
-    if (!positions.Contains(req.Position)) return Results.BadRequest("Invalid position.");
+    if (!IsValidFinger(req.FingerCode)) return Results.BadRequest("Invalid finger code.");
+    if (!IsValidPosition(req.Position)) return Results.BadRequest("Invalid position.");
     var result = await bridge.CaptureAsync(ct);
     byte[] png = PngEncoder.EncodeGrayscale(result.GrayBytes, result.Width, result.Height);
     return Results.Ok(new { width = result.Width, height = result.Height, contentType = "image/png", pngBase64 = Convert.ToBase64String(png), grayBase64 = Convert.ToBase64String(result.GrayBytes) });
 });
 
-// Realtime capture flow: start once, poll live frames, then confirm the captured frame.
 app.MapPost("/api/capture/realtime/start", async (CaptureRequest req, FingerprintCaptureSessionService sessions, HttpRequest http, TokenService tokens, CancellationToken ct) =>
 {
     if (!TryAuth(http, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
@@ -144,19 +143,7 @@ app.MapPost("/api/capture/realtime/{sessionId:guid}/confirm", async (Guid sessio
         var captured = await sessions.ConfirmAsync(sessionId, ct);
         int next = await db.FingerprintImages.Where(x => x.PersonId == req.PersonId && x.FingerCode == req.FingerCode && x.Position == req.Position).Select(x => (int?)x.SequenceNo).MaxAsync(ct) ?? 0;
         var stored = await storage.SaveGrayAsync(req.PersonId, req.FingerCode, req.Position, captured.GrayBytes, captured.Width, captured.Height, ct);
-        var row = new FingerprintImage
-        {
-            Id = Guid.NewGuid(),
-            PersonId = person.Id,
-            FingerCode = req.FingerCode,
-            Position = req.Position,
-            SequenceNo = next + 1,
-            EncryptedFileName = stored.FileName,
-            Width = stored.Width,
-            Height = stored.Height,
-            CapturedAtUtc = DateTime.UtcNow,
-            SyncStatus = "Pending"
-        };
+        var row = new FingerprintImage { Id = Guid.NewGuid(), PersonId = person.Id, FingerCode = req.FingerCode, Position = req.Position, SequenceNo = next + 1, EncryptedFileName = stored.FileName, Width = stored.Width, Height = stored.Height, CapturedAtUtc = DateTime.UtcNow, SyncStatus = "Pending" };
         db.FingerprintImages.Add(row);
         await db.SaveChangesAsync(ct);
         return Results.Ok(new { row.Id, row.FingerCode, row.Position, row.SequenceNo, row.Width, row.Height, row.SyncStatus });
