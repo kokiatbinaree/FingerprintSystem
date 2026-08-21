@@ -31,6 +31,23 @@ public sealed class FingerprintStorageService
         byte[] encrypted = await File.ReadAllBytesAsync(full, ct);
         return Decrypt(encrypted, _keys.GetKey());
     }
+    public Task DeleteAsync(string relativeName, CancellationToken ct)
+    {
+        string full = Path.Combine(_root, relativeName);
+        if (File.Exists(full)) File.Delete(full);
+        CleanupEmptyParents(full);
+        return Task.CompletedTask;
+    }
+    private static void CleanupEmptyParents(string full)
+    {
+        DirectoryInfo? dir = Directory.GetParent(full);
+        while (dir is not null && dir.Exists)
+        {
+            if (dir.EnumerateFileSystemInfos().Any()) break;
+            dir.Delete();
+            dir = dir.Parent;
+        }
+    }
     private static byte[] Encrypt(byte[] plain, byte[] key)
     {
         byte[] nonce = RandomNumberGenerator.GetBytes(12);
