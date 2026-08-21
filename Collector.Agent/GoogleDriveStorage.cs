@@ -45,7 +45,7 @@ public sealed class GoogleDriveStorage
                 throw new FileNotFoundException($"ไม่พบ credentials.json กรุณาวางไฟล์ที่ {CredentialsPath}", CredentialsPath);
 
             await using var stream = IOFile.OpenRead(CredentialsPath);
-            var secrets = GoogleClientSecrets.Load(stream).Secrets;
+            var secrets = GoogleClientSecrets.FromStream(stream).Secrets;
             var credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
                 secrets,
                 Scopes,
