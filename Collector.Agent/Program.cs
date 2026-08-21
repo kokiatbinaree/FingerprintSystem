@@ -1,9 +1,11 @@
 using System.Net.WebSockets;
 using FutronicBridge;
+using Collector.Agent;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls("http://127.0.0.1:15271");
 builder.Services.AddSingleton<FutronicScanner>();
+builder.Services.AddSingleton<GoogleDriveStorage>();
 
 builder.Services.AddCors(options =>
 {
@@ -55,6 +57,20 @@ app.MapPost("/capture", (FutronicScanner scanner) =>
     return frame is null
         ? Results.BadRequest(new { ok = false, error = "No fingerprint frame available." })
         : Results.File(frame.Png, "image/png", "fingerprint.png");
+});
+
+app.MapGet("/drive/status", (GoogleDriveStorage drive) => Results.Ok(drive.GetStatus()));
+app.MapPost("/drive/test-upload", async (GoogleDriveStorage drive, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var result = await drive.UploadTestAsync(cancellationToken);
+        return Results.Ok(new { ok = true, result });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(detail: ex.Message, statusCode: 500, title: "Google Drive test failed");
+    }
 });
 
 app.Map("/ws/preview", async (HttpContext context, FutronicScanner scanner) =>
