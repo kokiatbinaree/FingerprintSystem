@@ -17,22 +17,13 @@ public sealed class GoogleDriveStorage
         get
         {
             var devPath = Path.Combine(Directory.GetCurrentDirectory(), "secrets", "google-drive", "credentials.json");
-            return IOFile.Exists(devPath)
-                ? devPath
-                : Path.Combine(AppContext.BaseDirectory, "secrets", "google-drive", "credentials.json");
+            return IOFile.Exists(devPath) ? devPath : Path.Combine(AppContext.BaseDirectory, "secrets", "google-drive", "credentials.json");
         }
     }
 
-    public string TokenPath { get; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "FingerprintSystemMBT", "GoogleDrive", "token");
+    public string TokenPath { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FingerprintSystemMBT", "GoogleDrive", "token");
 
-    public object GetStatus() => new
-    {
-        configured = IOFile.Exists(CredentialsPath),
-        credentialsPath = CredentialsPath,
-        authenticated = drive is not null
-    };
+    public object GetStatus() => new { configured = IOFile.Exists(CredentialsPath), credentialsPath = CredentialsPath, authenticated = drive is not null };
 
     private async Task<DriveService> GetDriveAsync(CancellationToken cancellationToken)
     {
@@ -41,23 +32,11 @@ public sealed class GoogleDriveStorage
         try
         {
             if (drive is not null) return drive;
-            if (!IOFile.Exists(CredentialsPath))
-                throw new FileNotFoundException($"ไม่พบ credentials.json กรุณาวางไฟล์ที่ {CredentialsPath}", CredentialsPath);
-
+            if (!IOFile.Exists(CredentialsPath)) throw new FileNotFoundException($"ไม่พบ credentials.json กรุณาวางไฟล์ที่ {CredentialsPath}", CredentialsPath);
             await using var stream = IOFile.OpenRead(CredentialsPath);
             var secrets = GoogleClientSecrets.FromStream(stream).Secrets;
-            var credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
-                secrets,
-                Scopes,
-                "fingerprintsystem",
-                cancellationToken,
-                new Google.Apis.Util.Store.FileDataStore(TokenPath, true));
-
-            drive = new DriveService(new BaseClientService.Initializer
-            {
-                HttpClientInitializer = credential,
-                ApplicationName = "FingerprintSystemMBT Collector"
-            });
+            var credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(secrets, Scopes, "fingerprintsystem", cancellationToken, new Google.Apis.Util.Store.FileDataStore(TokenPath, true));
+            drive = new DriveService(new BaseClientService.Initializer { HttpClientInitializer = credential, ApplicationName = "FingerprintSystemMBT Collector" });
             return drive;
         }
         finally { gate.Release(); }
@@ -69,54 +48,44 @@ public sealed class GoogleDriveStorage
         var folder = await EnsureFolderAsync(service, "FingerprintSystem-Test", null, cancellationToken);
         var content = $"FingerprintSystem Google Drive test\r\nUTC: {DateTimeOffset.UtcNow:O}\r\n";
         await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(content));
-        var file = new DriveFile
-        {
-            Name = $"collector-test-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.txt",
-            Parents = new List<string> { folder },
-            MimeType = "text/plain"
-        };
-        return await UploadStreamAsync(service, folder, file, stream, "text/plain", cancellationToken);
+        var file = new DriveFile { Name = $"collector-test-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.txt", Parents = [folder], MimeType = "text/plain" };
+        return await UploadStreamAsync(service, file, stream, "text/plain", cancellationToken);
     }
 
     public async Task<object> UploadPngAsync(byte[] png, string fileName, CancellationToken cancellationToken = default)
+        => await UploadPngAsync(png, fileName, ["FingerprintSystem-Test"], cancellationToken);
+
+    public async Task<object> UploadPngAsync(byte[] png, string fileName, IReadOnlyList<string> folderPath, CancellationToken cancellationToken = default)
     {
         if (png.Length == 0) throw new ArgumentException("PNG data is empty.", nameof(png));
         if (string.IsNullOrWhiteSpace(fileName)) throw new ArgumentException("File name is required.", nameof(fileName));
         if (!fileName.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) fileName += ".png";
-
         var service = await GetDriveAsync(cancellationToken);
-        var folder = await EnsureFolderAsync(service, "FingerprintSystem-Test", null, cancellationToken);
+        var folder = await EnsureFolderTreeAsync(service, folderPath, cancellationToken);
         await using var stream = new MemoryStream(png, writable: false);
-        var file = new DriveFile
-        {
-            Name = fileName,
-            Parents = new List<string> { folder },
-            MimeType = "image/png"
-        };
-        return await UploadStreamAsync(service, folder, file, stream, "image/png", cancellationToken);
+        var file = new DriveFile { Name = fileName, Parents = [folder], MimeType = "image/png" };
+        return await UploadStreamAsync(service, file, stream, "image/png", cancellationToken);
     }
 
-    private static async Task<object> UploadStreamAsync(
-        DriveService service,
-        string folderId,
-        DriveFile file,
-        Stream stream,
-        string mimeType,
-        CancellationToken cancellationToken)
+    private static async Task<object> UploadStreamAsync(DriveService service, DriveFile file, Stream stream, string mimeType, CancellationToken cancellationToken)
     {
         var request = service.Files.Create(file, stream, mimeType);
         request.Fields = "id,name,webViewLink,parents,mimeType,size";
         await request.UploadAsync(cancellationToken);
         var uploaded = request.ResponseBody ?? throw new InvalidOperationException("Google Drive ไม่ส่งผลลัพธ์กลับมา");
-        return new
+        return new { uploaded.Id, uploaded.Name, uploaded.WebViewLink, uploaded.MimeType, uploaded.Size, FolderId = uploaded.Parents?.FirstOrDefault() };
+    }
+
+    private static async Task<string> EnsureFolderTreeAsync(DriveService service, IReadOnlyList<string> folderPath, CancellationToken cancellationToken)
+    {
+        string? parentId = null;
+        foreach (var rawName in folderPath)
         {
-            uploaded.Id,
-            uploaded.Name,
-            uploaded.WebViewLink,
-            uploaded.MimeType,
-            uploaded.Size,
-            FolderId = folderId
-        };
+            var name = rawName.Trim();
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            parentId = await EnsureFolderAsync(service, name, parentId, cancellationToken);
+        }
+        return parentId ?? throw new InvalidOperationException("Google Drive folder path is empty.");
     }
 
     private static async Task<string> EnsureFolderAsync(DriveService service, string name, string? parentId, CancellationToken cancellationToken)
@@ -132,7 +101,7 @@ public sealed class GoogleDriveStorage
         var existing = result.Files?.FirstOrDefault();
         if (existing?.Id is not null) return existing.Id;
         var folder = new DriveFile { Name = name, MimeType = "application/vnd.google-apps.folder" };
-        if (!string.IsNullOrWhiteSpace(parentId)) folder.Parents = new List<string> { parentId };
+        if (!string.IsNullOrWhiteSpace(parentId)) folder.Parents = [parentId];
         var create = service.Files.Create(folder);
         create.Fields = "id,name,parents";
         var created = await create.ExecuteAsync(cancellationToken);
