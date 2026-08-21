@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+**/data/
+**/node_modules/
+**/dist/
+*.db
+*.db-shm
+*.db-wal
+*.bin
+*.key
