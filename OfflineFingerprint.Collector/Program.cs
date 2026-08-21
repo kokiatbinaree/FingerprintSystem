@@ -11,6 +11,7 @@ builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configurati
 builder.Services.AddSingleton<LocalKeyService>();
 builder.Services.AddSingleton<TokenService>();
 builder.Services.AddHttpClient<FutronicBridgeService>();
+builder.Services.AddHttpClient<FingerprintCaptureSessionService>();
 builder.Services.AddSingleton<FingerprintStorageService>();
 string[] origins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? ["http://127.0.0.1:5173", "http://localhost:5173"];
 builder.Services.AddCors(o => o.AddPolicy("Web", p => p.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod()));
@@ -88,6 +89,7 @@ app.MapGet("/api/scanner/status", async (FutronicBridgeService bridge, HttpReque
     return Results.Ok(new { ready = await bridge.PingAsync(CancellationToken.None) });
 });
 
+// Legacy one-shot preview: captures and returns the final frame without saving.
 app.MapPost("/api/capture/preview", async (CaptureRequest req, FutronicBridgeService bridge, HttpRequest http, TokenService tokens, CancellationToken ct) =>
 {
     if (!TryAuth(http, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
@@ -97,23 +99,90 @@ app.MapPost("/api/capture/preview", async (CaptureRequest req, FutronicBridgeSer
     if (!positions.Contains(req.Position)) return Results.BadRequest("Invalid position.");
     var result = await bridge.CaptureAsync(ct);
     byte[] png = PngEncoder.EncodeGrayscale(result.GrayBytes, result.Width, result.Height);
-    return Results.Ok(new
+    return Results.Ok(new { width = result.Width, height = result.Height, contentType = "image/png", pngBase64 = Convert.ToBase64String(png), grayBase64 = Convert.ToBase64String(result.GrayBytes) });
+});
+
+// Realtime capture flow: start once, poll live frames, then confirm the captured frame.
+app.MapPost("/api/capture/realtime/start", async (CaptureRequest req, FingerprintCaptureSessionService sessions, HttpRequest http, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(http, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
+    if (!IsValidFinger(req.FingerCode)) return Results.BadRequest("Invalid finger code.");
+    if (!IsValidPosition(req.Position)) return Results.BadRequest("Invalid position.");
+    try
     {
-        width = result.Width,
-        height = result.Height,
-        contentType = "image/png",
-        pngBase64 = Convert.ToBase64String(png),
-        grayBase64 = Convert.ToBase64String(result.GrayBytes)
-    });
+        Guid sessionId = await sessions.StartAsync(ct);
+        return Results.Ok(new { sessionId, status = "starting" });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(ex.Message);
+    }
+});
+
+app.MapGet("/api/capture/realtime/{sessionId:guid}", async (Guid sessionId, FingerprintCaptureSessionService sessions, HttpRequest http, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(http, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
+    try
+    {
+        var snapshot = await sessions.PollAsync(sessionId, ct);
+        return Results.Ok(snapshot);
+    }
+    catch (KeyNotFoundException)
+    {
+        return Results.NotFound("Capture session not found.");
+    }
+});
+
+app.MapPost("/api/capture/realtime/{sessionId:guid}/confirm", async (Guid sessionId, ConfirmCaptureRequest req, FingerprintCaptureSessionService sessions, AppDbContext db, FingerprintStorageService storage, HttpRequest http, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(http, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
+    if (!IsValidFinger(req.FingerCode)) return Results.BadRequest("Invalid finger code.");
+    if (!IsValidPosition(req.Position)) return Results.BadRequest("Invalid position.");
+    if (await db.Persons.FindAsync([req.PersonId], ct) is not Person person) return Results.NotFound("Person not found.");
+    try
+    {
+        var captured = await sessions.ConfirmAsync(sessionId, ct);
+        int next = await db.FingerprintImages.Where(x => x.PersonId == req.PersonId && x.FingerCode == req.FingerCode && x.Position == req.Position).Select(x => (int?)x.SequenceNo).MaxAsync(ct) ?? 0;
+        var stored = await storage.SaveGrayAsync(req.PersonId, req.FingerCode, req.Position, captured.GrayBytes, captured.Width, captured.Height, ct);
+        var row = new FingerprintImage
+        {
+            Id = Guid.NewGuid(),
+            PersonId = person.Id,
+            FingerCode = req.FingerCode,
+            Position = req.Position,
+            SequenceNo = next + 1,
+            EncryptedFileName = stored.FileName,
+            Width = stored.Width,
+            Height = stored.Height,
+            CapturedAtUtc = DateTime.UtcNow,
+            SyncStatus = "Pending"
+        };
+        db.FingerprintImages.Add(row);
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new { row.Id, row.FingerCode, row.Position, row.SequenceNo, row.Width, row.Height, row.SyncStatus });
+    }
+    catch (KeyNotFoundException)
+    {
+        return Results.NotFound("Capture session not found.");
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Conflict(ex.Message);
+    }
+});
+
+app.MapPost("/api/capture/realtime/{sessionId:guid}/cancel", async (Guid sessionId, FingerprintCaptureSessionService sessions, HttpRequest http, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(http, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
+    await sessions.CancelAsync(sessionId, ct);
+    return Results.NoContent();
 });
 
 app.MapPost("/api/capture/confirm", async (ConfirmCaptureRequest req, AppDbContext db, FingerprintStorageService storage, HttpRequest http, TokenService tokens, CancellationToken ct) =>
 {
     if (!TryAuth(http, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
-    string[] fingers = ["L1","L2","L3","L4","L5","R1","R2","R3","R4","R5"];
-    string[] positions = ["left","center","right"];
-    if (!fingers.Contains(req.FingerCode)) return Results.BadRequest("Invalid finger code.");
-    if (!positions.Contains(req.Position)) return Results.BadRequest("Invalid position.");
+    if (!IsValidFinger(req.FingerCode)) return Results.BadRequest("Invalid finger code.");
+    if (!IsValidPosition(req.Position)) return Results.BadRequest("Invalid position.");
     if (await db.Persons.FindAsync([req.PersonId], ct) is not Person person) return Results.NotFound("Person not found.");
     byte[] gray;
     try { gray = Convert.FromBase64String(req.GrayBase64); }
@@ -121,19 +190,7 @@ app.MapPost("/api/capture/confirm", async (ConfirmCaptureRequest req, AppDbConte
     if (req.Width <= 0 || req.Height <= 0 || gray.Length != req.Width * req.Height) return Results.BadRequest("Invalid fingerprint image dimensions.");
     int next = await db.FingerprintImages.Where(x => x.PersonId == req.PersonId && x.FingerCode == req.FingerCode && x.Position == req.Position).Select(x => (int?)x.SequenceNo).MaxAsync(ct) ?? 0;
     var stored = await storage.SaveGrayAsync(req.PersonId, req.FingerCode, req.Position, gray, req.Width, req.Height, ct);
-    var row = new FingerprintImage
-    {
-        Id = Guid.NewGuid(),
-        PersonId = person.Id,
-        FingerCode = req.FingerCode,
-        Position = req.Position,
-        SequenceNo = next + 1,
-        EncryptedFileName = stored.FileName,
-        Width = stored.Width,
-        Height = stored.Height,
-        CapturedAtUtc = DateTime.UtcNow,
-        SyncStatus = "Pending"
-    };
+    var row = new FingerprintImage { Id = Guid.NewGuid(), PersonId = person.Id, FingerCode = req.FingerCode, Position = req.Position, SequenceNo = next + 1, EncryptedFileName = stored.FileName, Width = stored.Width, Height = stored.Height, CapturedAtUtc = DateTime.UtcNow, SyncStatus = "Pending" };
     db.FingerprintImages.Add(row);
     await db.SaveChangesAsync(ct);
     return Results.Ok(new { row.Id, row.FingerCode, row.Position, row.SequenceNo, row.Width, row.Height, row.SyncStatus });
@@ -171,6 +228,9 @@ static bool TryAuth(HttpRequest request, TokenService tokens, out TokenService.T
     if (string.IsNullOrWhiteSpace(header) || !header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return false;
     return tokens.TryGet(header[7..].Trim(), out info);
 }
+
+static bool IsValidFinger(string value) => value is "L1" or "L2" or "L3" or "L4" or "L5" or "R1" or "R2" or "R3" or "R4" or "R5";
+static bool IsValidPosition(string value) => value is "left" or "center" or "right";
 
 public sealed record LoginRequest(string Username, string Password);
 public sealed record CaptureRequest(Guid PersonId, string FingerCode, string Position);
