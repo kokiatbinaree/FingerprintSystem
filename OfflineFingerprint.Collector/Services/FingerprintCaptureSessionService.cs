@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace OfflineFingerprint.Collector.Services;
@@ -66,7 +67,10 @@ public sealed class FingerprintCaptureSessionService
             {
                 byte[] gray = await imageResponse.Content.ReadAsByteArrayAsync(ct);
                 if (gray.Length == session.Width * session.Height)
+                {
                     session.LatestGray = gray;
+                    session.LastFrameHash = Convert.ToHexString(SHA256.HashData(gray)).ToLowerInvariant();
+                }
             }
         }
         catch { }
@@ -88,6 +92,7 @@ public sealed class FingerprintCaptureSessionService
             session.Height,
             imageBase64,
             session.LatestGray is { Length: > 0 },
+            session.LastFrameHash,
             session.Error);
     }
 
@@ -142,6 +147,7 @@ public sealed class FingerprintCaptureSessionService
         public string Status { get; set; } = "starting";
         public string StatusMessage { get; set; } = "";
         public byte[]? LatestGray { get; set; }
+        public string? LastFrameHash { get; set; }
         public string? Error { get; set; }
     }
 
@@ -152,6 +158,7 @@ public sealed class FingerprintCaptureSessionService
         int Height,
         string? PngBase64,
         bool HasImage,
+        string? FrameHash,
         string? Error);
 
     public sealed record CapturedImage(byte[] GrayBytes, int Width, int Height);
