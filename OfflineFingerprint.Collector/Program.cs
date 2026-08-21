@@ -88,7 +88,26 @@ app.MapGet("/api/scanner/status", async (FutronicBridgeService bridge, HttpReque
     return Results.Ok(new { ready = await bridge.PingAsync(CancellationToken.None) });
 });
 
-app.MapPost("/api/capture", async (CaptureRequest req, AppDbContext db, FutronicBridgeService bridge, FingerprintStorageService storage, HttpRequest http, TokenService tokens, CancellationToken ct) =>
+app.MapPost("/api/capture/preview", async (CaptureRequest req, FutronicBridgeService bridge, HttpRequest http, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(http, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
+    string[] fingers = ["L1","L2","L3","L4","L5","R1","R2","R3","R4","R5"];
+    string[] positions = ["left","center","right"];
+    if (!fingers.Contains(req.FingerCode)) return Results.BadRequest("Invalid finger code.");
+    if (!positions.Contains(req.Position)) return Results.BadRequest("Invalid position.");
+    var result = await bridge.CaptureAsync(ct);
+    byte[] png = PngEncoder.EncodeGrayscale(result.GrayBytes, result.Width, result.Height);
+    return Results.Ok(new
+    {
+        width = result.Width,
+        height = result.Height,
+        contentType = "image/png",
+        pngBase64 = Convert.ToBase64String(png),
+        grayBase64 = Convert.ToBase64String(result.GrayBytes)
+    });
+});
+
+app.MapPost("/api/capture/confirm", async (ConfirmCaptureRequest req, AppDbContext db, FingerprintStorageService storage, HttpRequest http, TokenService tokens, CancellationToken ct) =>
 {
     if (!TryAuth(http, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
     string[] fingers = ["L1","L2","L3","L4","L5","R1","R2","R3","R4","R5"];
@@ -96,11 +115,27 @@ app.MapPost("/api/capture", async (CaptureRequest req, AppDbContext db, Futronic
     if (!fingers.Contains(req.FingerCode)) return Results.BadRequest("Invalid finger code.");
     if (!positions.Contains(req.Position)) return Results.BadRequest("Invalid position.");
     if (await db.Persons.FindAsync([req.PersonId], ct) is not Person person) return Results.NotFound("Person not found.");
-    var result = await bridge.CaptureAsync(ct);
+    byte[] gray;
+    try { gray = Convert.FromBase64String(req.GrayBase64); }
+    catch (FormatException) { return Results.BadRequest("Invalid fingerprint image data."); }
+    if (req.Width <= 0 || req.Height <= 0 || gray.Length != req.Width * req.Height) return Results.BadRequest("Invalid fingerprint image dimensions.");
     int next = await db.FingerprintImages.Where(x => x.PersonId == req.PersonId && x.FingerCode == req.FingerCode && x.Position == req.Position).Select(x => (int?)x.SequenceNo).MaxAsync(ct) ?? 0;
-    var stored = await storage.SaveGrayAsync(req.PersonId, req.FingerCode, req.Position, result.GrayBytes, result.Width, result.Height, ct);
-    var row = new FingerprintImage { Id = Guid.NewGuid(), PersonId = person.Id, FingerCode = req.FingerCode, Position = req.Position, SequenceNo = next + 1, EncryptedFileName = stored.FileName, Width = stored.Width, Height = stored.Height, CapturedAtUtc = DateTime.UtcNow, SyncStatus = "Pending" };
-    db.FingerprintImages.Add(row); await db.SaveChangesAsync(ct);
+    var stored = await storage.SaveGrayAsync(req.PersonId, req.FingerCode, req.Position, gray, req.Width, req.Height, ct);
+    var row = new FingerprintImage
+    {
+        Id = Guid.NewGuid(),
+        PersonId = person.Id,
+        FingerCode = req.FingerCode,
+        Position = req.Position,
+        SequenceNo = next + 1,
+        EncryptedFileName = stored.FileName,
+        Width = stored.Width,
+        Height = stored.Height,
+        CapturedAtUtc = DateTime.UtcNow,
+        SyncStatus = "Pending"
+    };
+    db.FingerprintImages.Add(row);
+    await db.SaveChangesAsync(ct);
     return Results.Ok(new { row.Id, row.FingerCode, row.Position, row.SequenceNo, row.Width, row.Height, row.SyncStatus });
 });
 
@@ -139,3 +174,4 @@ static bool TryAuth(HttpRequest request, TokenService tokens, out TokenService.T
 
 public sealed record LoginRequest(string Username, string Password);
 public sealed record CaptureRequest(Guid PersonId, string FingerCode, string Position);
+public sealed record ConfirmCaptureRequest(Guid PersonId, string FingerCode, string Position, int Width, int Height, string GrayBase64);
