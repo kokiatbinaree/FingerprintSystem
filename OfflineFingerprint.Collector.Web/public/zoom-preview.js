@@ -140,6 +140,7 @@
   const scan = () => {
     document.querySelectorAll('.zoom-box').forEach(setup);
     setupUiEnhancements();
+    if(!window.__fingerprintSingleDeleteLoader){window.__fingerprintSingleDeleteLoader=true;const s=document.createElement('script');s.src='/fingerprint-single-delete.js';s.defer=true;document.head.appendChild(s);}
   };
   scan();
   new MutationObserver(scan).observe(document.body, {childList:true,subtree:true});
