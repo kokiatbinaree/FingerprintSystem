@@ -11,7 +11,17 @@ public sealed class GoogleDriveStorage
     private readonly SemaphoreSlim gate = new(1, 1);
     private DriveService? drive;
 
-    public string CredentialsPath { get; } = Path.Combine(AppContext.BaseDirectory, "secrets", "google-drive", "credentials.json");
+    public string CredentialsPath
+    {
+        get
+        {
+            var devPath = Path.Combine(Directory.GetCurrentDirectory(), "secrets", "google-drive", "credentials.json");
+            return File.Exists(devPath)
+                ? devPath
+                : Path.Combine(AppContext.BaseDirectory, "secrets", "google-drive", "credentials.json");
+        }
+    }
+
     public string TokenPath { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "FingerprintSystemMBT", "GoogleDrive", "token");
