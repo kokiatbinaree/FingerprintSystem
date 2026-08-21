@@ -1,7 +1,8 @@
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Drive.v3;
-using Google.Apis.Drive.v3.Data;
 using Google.Apis.Services;
+using DriveFile = Google.Apis.Drive.v3.Data.File;
+using IOFile = System.IO.File;
 
 namespace Collector.Agent;
 
@@ -16,7 +17,7 @@ public sealed class GoogleDriveStorage
         get
         {
             var devPath = Path.Combine(Directory.GetCurrentDirectory(), "secrets", "google-drive", "credentials.json");
-            return File.Exists(devPath)
+            return IOFile.Exists(devPath)
                 ? devPath
                 : Path.Combine(AppContext.BaseDirectory, "secrets", "google-drive", "credentials.json");
         }
@@ -28,7 +29,7 @@ public sealed class GoogleDriveStorage
 
     public object GetStatus() => new
     {
-        configured = File.Exists(CredentialsPath),
+        configured = IOFile.Exists(CredentialsPath),
         credentialsPath = CredentialsPath,
         authenticated = drive is not null
     };
@@ -40,11 +41,11 @@ public sealed class GoogleDriveStorage
         try
         {
             if (drive is not null) return drive;
-            if (!File.Exists(CredentialsPath))
+            if (!IOFile.Exists(CredentialsPath))
                 throw new FileNotFoundException($"ไม่พบ credentials.json กรุณาวางไฟล์ที่ {CredentialsPath}", CredentialsPath);
 
-            await using var stream = File.OpenRead(CredentialsPath);
-            var secrets = (await GoogleClientSecrets.LoadAsync(stream, cancellationToken)).Secrets;
+            await using var stream = IOFile.OpenRead(CredentialsPath);
+            var secrets = GoogleClientSecrets.Load(stream).Secrets;
             var credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
                 secrets,
                 Scopes,
@@ -68,7 +69,7 @@ public sealed class GoogleDriveStorage
         var folder = await EnsureFolderAsync(service, "FingerprintSystem-Test", null, cancellationToken);
         var content = $"FingerprintSystem Google Drive test\r\nUTC: {DateTimeOffset.UtcNow:O}\r\n";
         await using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(content));
-        var file = new Google.Apis.Drive.v3.Data.File
+        var file = new DriveFile
         {
             Name = $"collector-test-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.txt",
             Parents = new List<string> { folder },
@@ -93,7 +94,7 @@ public sealed class GoogleDriveStorage
         var result = await search.ExecuteAsync(cancellationToken);
         var existing = result.Files?.FirstOrDefault();
         if (existing?.Id is not null) return existing.Id;
-        var folder = new Google.Apis.Drive.v3.Data.File { Name = name, MimeType = "application/vnd.google-apps.folder" };
+        var folder = new DriveFile { Name = name, MimeType = "application/vnd.google-apps.folder" };
         if (!string.IsNullOrWhiteSpace(parentId)) folder.Parents = new List<string> { parentId };
         var create = service.Files.Create(folder);
         create.Fields = "id,name,parents";
