@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
+using System.Text.Json;
 
 namespace OfflineFingerprint.Collector.Services;
 
@@ -39,14 +38,15 @@ public sealed class FingerprintCaptureSessionService
             return Snapshot(session);
 
         bool fingerPresent = await ReadFingerPresentAsync(ct);
-        if (fingerPresent) session.HadFinger = true;
+        if (fingerPresent)
+            session.HadFinger = true;
 
         if (!session.HadFinger || fingerPresent)
         {
             byte[]? png = await ReadCurrentPngAsync(ct);
             if (png is not null)
             {
-                DecodePngToGray(png, out var gray, out var width, out var height);
+                DecodePngToGray(png, out byte[] gray, out int width, out int height);
                 session.LatestGray = gray;
                 session.Width = width;
                 session.Height = height;
@@ -57,13 +57,14 @@ public sealed class FingerprintCaptureSessionService
         if (session.HadFinger && !fingerPresent)
         {
             session.Done = session.LatestGray is { Length: > 0 };
-            if (!session.Done) session.Error = "Fingerprint frame was not received.";
+            if (!session.Done)
+                session.Error = "Fingerprint frame was not received.";
         }
 
         return Snapshot(session);
     }
 
-    public async Task<CapturedImage> ConfirmAsync(Guid sessionId, CancellationToken ct)
+    public Task<CapturedImage> ConfirmAsync(Guid sessionId, CancellationToken ct)
     {
         if (!_sessions.TryGetValue(sessionId, out var session))
             throw new KeyNotFoundException("Capture session not found.");
@@ -72,7 +73,7 @@ public sealed class FingerprintCaptureSessionService
             throw new InvalidOperationException("Lift your finger after a live frame has been captured, then confirm.");
 
         _sessions.TryRemove(sessionId, out _);
-        return new CapturedImage(session.LatestGray, session.Width, session.Height);
+        return Task.FromResult(new CapturedImage(session.LatestGray, session.Width, session.Height));
     }
 
     public async Task CancelAsync(Guid sessionId, CancellationToken ct)
@@ -126,20 +127,19 @@ public sealed class FingerprintCaptureSessionService
 
     private static void DecodePngToGray(byte[] png, out byte[] gray, out int width, out int height)
     {
-        using Image<L8> image = Image.Load<L8>(png);
+        using var image = System.Drawing.Image.FromStream(new MemoryStream(png));
         width = image.Width;
         height = image.Height;
+        using var bitmap = new System.Drawing.Bitmap(image);
         gray = new byte[width * height];
 
         for (int y = 0; y < height; y++)
         {
-            image.ProcessPixelRows(accessor =>
+            for (int x = 0; x < width; x++)
             {
-                var row = accessor.GetRowSpan(y);
-                for (int x = 0; x < width; x++)
-                    gray[y * width + x] = row[x].PackedValue;
-            });
-            break;
+                var pixel = bitmap.GetPixel(x, y);
+                gray[y * width + x] = pixel.R;
+            }
         }
     }
 
@@ -157,6 +157,6 @@ public sealed class FingerprintCaptureSessionService
 
     private sealed record AgentStatus(bool Ready, int Width, int Height, int ImageSize, bool FingerPresent, DateTimeOffset LastFrame);
 
-    public sealed record PreviewSnapshot(Guid SessionId, string Status, int Width, int Height, string? PngBase64, bool HasImage, string? Error);
-    public sealed record CapturedImage(byte[] GrayBytes, int Width, int Height);
+    public sealed record PreviewSnapshot(Guid SessionId,string Status,int Width,int Height,string? PngBase64,bool HasImage,string? Error);
+    public sealed record CapturedImage(byte[] GrayBytes,int Width,int Height);
 }
