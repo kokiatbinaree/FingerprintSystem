@@ -21,7 +21,7 @@
 
     const apply = (animate = true) => {
       layer.style.transform = `translate(calc(-50% + ${panX}px),calc(-50% + ${panY}px)) scale(${scale})`;
-      layer.style.transition = animate && !dragging ? 'transform 140ms ease-out' : 'none';
+      layer.style.transition = animate && !dragging ? 'transform 120ms ease-out' : 'none';
       box.style.cursor = scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'default';
     };
 
@@ -38,20 +38,16 @@
       e.stopImmediatePropagation();
 
       const rect = box.getBoundingClientRect();
-      const mx = e.clientX - rect.left - rect.width / 2;
-      const my = e.clientY - rect.top - rect.height / 2;
+      const mouseX = e.clientX - rect.left - rect.width / 2;
+      const mouseY = e.clientY - rect.top - rect.height / 2;
       const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale * (e.deltaY < 0 ? STEP : 1 / STEP)));
       if (next === scale) return;
 
-      // Image-space coordinate currently under the mouse.
-      const worldX = (mx - panX) / scale;
-      const worldY = (my - panY) / scale;
-
-      // Move that coordinate toward the visual center while zooming.
-      const targetX = mx * (scale / next);
-      const targetY = my * (scale / next);
-      panX = targetX - worldX * next;
-      panY = targetY - worldY * next;
+      // Keep the exact image coordinate under the mouse fixed under the mouse.
+      const imageX = (mouseX - panX) / scale;
+      const imageY = (mouseY - panY) / scale;
+      panX = mouseX - imageX * next;
+      panY = mouseY - imageY * next;
       scale = next;
       apply(true);
     };
@@ -100,12 +96,8 @@
     box.addEventListener('pointercancel', pointerUp, { capture: true });
     box.addEventListener('dblclick', doubleClick, { capture: true });
 
-    const observer = new MutationObserver(() => {
-      // React changes the child node when switching between stored images/live preview.
-      reset();
-    });
+    const observer = new MutationObserver(() => reset());
     observer.observe(box, { childList: true, subtree: false });
-
     apply(false);
   }
 
