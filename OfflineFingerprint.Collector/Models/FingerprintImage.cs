@@ -13,4 +13,5 @@ public class FingerprintImage
     public int Height { get; set; }
     public DateTime CapturedAtUtc { get; set; }
     public string SyncStatus { get; set; } = "Pending";
+    public string? DriveFileId { get; set; }
 }
