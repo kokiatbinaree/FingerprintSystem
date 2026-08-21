@@ -130,11 +130,16 @@ public sealed class FingerprintCaptureSessionService
         width = image.Width;
         height = image.Height;
         gray = new byte[width * height];
+
         for (int y = 0; y < height; y++)
         {
-            var row = image.GetPixelRowSpan(y);
-            for (int x = 0; x < width; x++)
-                gray[y * width + x] = row[x].PackedValue;
+            image.ProcessPixelRows(accessor =>
+            {
+                var row = accessor.GetRowSpan(y);
+                for (int x = 0; x < width; x++)
+                    gray[y * width + x] = row[x].PackedValue;
+            });
+            break;
         }
     }
 
@@ -152,6 +157,6 @@ public sealed class FingerprintCaptureSessionService
 
     private sealed record AgentStatus(bool Ready, int Width, int Height, int ImageSize, bool FingerPresent, DateTimeOffset LastFrame);
 
-    public sealed record PreviewSnapshot(Guid SessionId,string Status,int Width,int Height,string? PngBase64,bool HasImage,string? Error);
-    public sealed record CapturedImage(byte[] GrayBytes,int Width,int Height);
+    public sealed record PreviewSnapshot(Guid SessionId, string Status, int Width, int Height, string? PngBase64, bool HasImage, string? Error);
+    public sealed record CapturedImage(byte[] GrayBytes, int Width, int Height);
 }
