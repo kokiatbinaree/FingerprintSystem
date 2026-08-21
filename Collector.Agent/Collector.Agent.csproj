@@ -9,7 +9,7 @@
     <UseWindowsForms>false</UseWindowsForms>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="System.Drawing.Common" Version="8.0.19" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.20" />
     <None Include="ftrScanAPI.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
