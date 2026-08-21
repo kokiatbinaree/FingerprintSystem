@@ -4,6 +4,7 @@ using OfflineFingerprint.Collector.Models;
 using OfflineFingerprint.Collector.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.UseUrls("http://localhost:5140");
 Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "data"));
 builder.Services.AddOpenApi();
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Default")));
