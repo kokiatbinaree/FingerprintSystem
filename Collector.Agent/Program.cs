@@ -1,120 +1,61 @@
-using System.Drawing;
-using System.Drawing.Imaging;
-using System.Net;
-using System.Net.Http.Json;
+using System.Net.WebSockets;
+using FutronicBridge;
 
-const string bridgeBase = "http://127.0.0.1:15270/fpoperation";
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls("http://127.0.0.1:15271");
-
+builder.Services.AddSingleton<FutronicScanner>();
 var app = builder.Build();
-using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+app.UseWebSockets();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "Collector.Agent" }));
 
-app.MapGet("/scanner/status", async (CancellationToken ct) =>
+app.MapGet("/scanner/status", (FutronicScanner scanner) =>
 {
-    try
+    var s = scanner.GetStatus();
+    return Results.Ok(new
     {
-        using var response = await http.PostAsJsonAsync(bridgeBase, new { operation = "capture", lfd = "no", invert = "yes" }, ct);
-        if (!response.IsSuccessStatusCode)
-            return Results.Ok(new { ready = false, status = (int)response.StatusCode });
-
-        var payload = await response.Content.ReadFromJsonAsync<BridgeResponse>(cancellationToken: ct);
-        return Results.Ok(new { ready = payload?.status == "success", bridge = payload?.status });
-    }
-    catch
-    {
-        return Results.Ok(new { ready = false, status = "bridge-unreachable" });
-    }
+        ready = s.Open || scanner.Open(),
+        width = s.Width,
+        height = s.Height,
+        imageSize = s.ImageSize,
+        fingerPresent = s.FingerPresent,
+        lastFrame = s.LastFrame
+    });
 });
 
-app.MapPost("/scanner/capture", async (CaptureRequest request, CancellationToken ct) =>
+app.MapGet("/device", (FutronicScanner scanner) => Results.Json(scanner.GetStatus()));
+app.MapPost("/device/open", (FutronicScanner scanner) => Results.Ok(new { ok = scanner.Open() }));
+app.MapPost("/device/close", (FutronicScanner scanner) =>
 {
-    try
+    scanner.Close();
+    return Results.Ok(new { ok = true });
+});
+
+app.MapGet("/image", (FutronicScanner scanner) =>
+{
+    var frame = scanner.GetCurrentFrame();
+    return frame is null ? Results.NoContent() : Results.File(frame.Png, "image/png");
+});
+
+app.MapPost("/capture", (FutronicScanner scanner) =>
+{
+    var frame = scanner.GetCurrentFrame();
+    return frame is null
+        ? Results.BadRequest(new { ok = false, error = "No fingerprint frame available." })
+        : Results.File(frame.Png, "image/png", "fingerprint.png");
+});
+
+app.Map("/ws/preview", async (HttpContext context, FutronicScanner scanner) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
     {
-        using var start = await http.PostAsJsonAsync(bridgeBase, new { operation = "capture", lfd = "no", invert = "yes" }, ct);
-        if (!start.IsSuccessStatusCode)
-            return Results.Problem("Futronic Bridge could not start capture.", statusCode: 502);
-
-        var op = await start.Content.ReadFromJsonAsync<BridgeResponse>(cancellationToken: ct);
-        if (op is null || string.IsNullOrWhiteSpace(op.id))
-            return Results.Problem("Bridge returned no operation id.", statusCode: 502);
-
-        var deadline = DateTime.UtcNow.AddSeconds(Math.Clamp(request.TimeoutSeconds, 5, 60));
-        while (DateTime.UtcNow < deadline)
-        {
-            await Task.Delay(300, ct);
-            var stateResponse = await http.GetAsync($"{bridgeBase}/{op.id}", ct);
-            if (!stateResponse.IsSuccessStatusCode)
-                continue;
-
-            var state = await stateResponse.Content.ReadFromJsonAsync<BridgeResponse>(cancellationToken: ct);
-            if (state?.state == "inprogress")
-                continue;
-
-            if (state?.state == "done" && state.status == "success")
-            {
-                var imageResponse = await http.GetAsync($"{bridgeBase}/{op.id}/image", ct);
-                if (!imageResponse.IsSuccessStatusCode)
-                    return Results.Problem("Bridge returned no image.", statusCode: 502);
-
-                var gray = await imageResponse.Content.ReadAsByteArrayAsync(ct);
-                int width = ParsePositiveInt(state.devwidth) ?? 320;
-                int height = ParsePositiveInt(state.devheight) ?? Math.Max(1, gray.Length / Math.Max(1, width));
-                var png = GrayToPng(gray, width, height);
-
-                try { await http.PutAsync($"{bridgeBase}/{op.id}/cancel", null, ct); } catch { }
-
-                return Results.Ok(new { width, height, contentType = "image/png", pngBase64 = Convert.ToBase64String(png) });
-            }
-
-            if (state?.state == "done" && state.status == "fail")
-                return Results.Problem("Fingerprint capture failed.", statusCode: 409);
-        }
-
-        try { await http.PutAsync($"{bridgeBase}/{op.id}/cancel", null, ct); } catch { }
-        return Results.StatusCode((int)HttpStatusCode.RequestTimeout);
+        context.Response.StatusCode = 400;
+        await context.Response.WriteAsync("WebSocket required.");
+        return;
     }
-    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-    {
-        return Results.StatusCode((int)HttpStatusCode.RequestTimeout);
-    }
-    catch (Exception ex)
-    {
-        return Results.Problem(ex.Message, statusCode: 502);
-    }
+
+    using var socket = await context.WebSockets.AcceptWebSocketAsync();
+    await scanner.StreamAsync(socket, context.RequestAborted);
 });
 
 app.Run();
-
-static int? ParsePositiveInt(string? value) => int.TryParse(value, out var n) && n > 0 ? n : null;
-
-static byte[] GrayToPng(byte[] gray, int width, int height)
-{
-    if (gray.Length < width * height)
-        throw new InvalidOperationException("Bridge image buffer is smaller than expected.");
-
-    using var bmp = new Bitmap(width, height, PixelFormat.Format24bppRgb);
-    for (int y = 0; y < height; y++)
-        for (int x = 0; x < width; x++)
-        {
-            int value = gray[(y * width) + x];
-            bmp.SetPixel(x, y, Color.FromArgb(value, value, value));
-        }
-
-    using var ms = new MemoryStream();
-    bmp.Save(ms, ImageFormat.Png);
-    return ms.ToArray();
-}
-
-public sealed record CaptureRequest(int TimeoutSeconds = 30);
-public sealed class BridgeResponse
-{
-    public string? status { get; set; }
-    public string? state { get; set; }
-    public string? operation { get; set; }
-    public string? id { get; set; }
-    public string? devwidth { get; set; }
-    public string? devheight { get; set; }
-}
