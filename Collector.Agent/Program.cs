@@ -4,7 +4,19 @@ using FutronicBridge;
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls("http://127.0.0.1:15271");
 builder.Services.AddSingleton<FutronicScanner>();
+
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.WithOrigins("http://127.0.0.1:5173", "http://localhost:5173")
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
+
 var app = builder.Build();
+app.UseCors();
 app.UseWebSockets();
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "Collector.Agent" }));
