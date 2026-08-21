@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Firebase Smoke Test</title>
+  <style>
+    body{font-family:Segoe UI,Tahoma,sans-serif;background:#eef1f5;color:#172033;margin:0;padding:32px}
+    .card{max-width:720px;margin:0 auto;background:#fff;border:1px solid #dce2e8;border-radius:16px;padding:24px;box-shadow:0 8px 30px #0000000d}
+    h1{margin:0 0 8px}.muted{color:#667085}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid .full{grid-column:1/-1}
+    label{display:block;font-weight:600}.grid input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #cfd6df;border-radius:8px;margin-top:6px}
+    button{padding:10px 14px;border-radius:9px;border:1px solid #cdd5df;background:#fff;cursor:pointer;font-weight:700;margin:6px 6px 0 0}
+    .primary{background:#174b87;color:#fff;border-color:#174b87}.success{background:#ecfdf3;color:#166534;padding:12px;border-radius:9px}.error{background:#fff0f0;color:#a21d1d;padding:12px;border-radius:9px}.status{margin-top:18px}
+    pre{white-space:pre-wrap;background:#f7f9fb;padding:12px;border-radius:9px;font-size:12px}
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>Firebase Smoke Test</h1>
+  <p class="muted">หน้านี้แยกจากระบบเก็บลายนิ้วมือ ใช้ตรวจ Authentication + Firestore เท่านั้น</p>
+  <div class="grid">
+    <label>Email<input id="email" type="email" placeholder="test@example.com" /></label>
+    <label>Password<input id="password" type="password" placeholder="อย่างน้อย 6 ตัวอักษร" /></label>
+  </div>
+  <div>
+    <button class="primary" id="signup">สร้างผู้ใช้ทดสอบ</button>
+    <button id="login">เข้าสู่ระบบทดสอบ</button>
+    <button id="logout">ออกจากระบบ Firebase</button>
+    <button id="write">เขียน Firestore</button>
+    <button id="read">อ่าน Firestore</button>
+  </div>
+  <div class="status" id="status"></div>
+  <pre id="details">ยังไม่ได้ทดสอบ</pre>
+</div>
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js';
+  import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-auth.js';
+  import { getFirestore, doc, setDoc, getDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore.js';
+
+  const firebaseConfig = {
+    apiKey: 'AIzaSyDtqrlZRoQ5EjBxLdIklHm3RbZPPlywCzQ',
+    authDomain: 'fingerprintsystemmbt.firebaseapp.com',
+    projectId: 'fingerprintsystemmbt',
+    storageBucket: 'fingerprintsystemmbt.firebasestorage.app',
+    messagingSenderId: '225601369153',
+    appId: '1:225601369153:web:d333a7872cdc026319c2c0'
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  const $ = id => document.getElementById(id);
+  const setStatus = (message, ok=true) => { $('status').className = ok ? 'success' : 'error'; $('status').textContent = message; };
+  const show = value => { $('details').textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2); };
+  const creds = () => ({ email: $('email').value.trim(), password: $('password').value });
+
+  onAuthStateChanged(auth, user => {
+    if(user){ setStatus(`Firebase Login สำเร็จ: ${user.email}`); show({uid:user.uid,email:user.email}); }
+    else { $('status').className=''; $('status').textContent='ยังไม่ได้ Login Firebase'; }
+  });
+
+  $('signup').onclick = async () => {
+    const {email,password}=creds();
+    try{ const r=await createUserWithEmailAndPassword(auth,email,password); setStatus('สร้างผู้ใช้ Firebase สำเร็จ'); show({uid:r.user.uid,email:r.user.email}); }
+    catch(e){ setStatus('สร้างผู้ใช้ไม่สำเร็จ: '+e.message,false); show(e.message); }
+  };
+
+  $('login').onclick = async () => {
+    const {email,password}=creds();
+    try{ const r=await signInWithEmailAndPassword(auth,email,password); setStatus('Login Firebase สำเร็จ'); show({uid:r.user.uid,email:r.user.email}); }
+    catch(e){ setStatus('Login ไม่สำเร็จ: '+e.message,false); show(e.message); }
+  };
+
+  $('logout').onclick = async () => {
+    try{ await signOut(auth); setStatus('ออกจาก Firebase แล้ว'); show('signed out'); }
+    catch(e){ setStatus('Logout ไม่สำเร็จ: '+e.message,false); show(e.message); }
+  };
+
+  $('write').onclick = async () => {
+    const user=auth.currentUser;
+    if(!user){setStatus('กรุณา Login Firebase ก่อน',false);return;}
+    try{
+      await setDoc(doc(db,'systemDiagnostics',user.uid),{email:user.email,ok:true,testedAt:serverTimestamp(),source:'FingerprintSystem Firebase smoke test'});
+      setStatus('เขียน Firestore สำเร็จ'); show({collection:'systemDiagnostics',documentId:user.uid,ok:true});
+    }catch(e){setStatus('เขียน Firestore ไม่สำเร็จ: '+e.message,false);show(e.message);}
+  };
+
+  $('read').onclick = async () => {
+    const user=auth.currentUser;
+    if(!user){setStatus('กรุณา Login Firebase ก่อน',false);return;}
+    try{
+      const snap=await getDoc(doc(db,'systemDiagnostics',user.uid));
+      if(snap.exists()){setStatus('อ่าน Firestore สำเร็จ');show(snap.data());}
+      else{setStatus('อ่านสำเร็จ แต่ยังไม่มีเอกสาร');show({exists:false});}
+    }catch(e){setStatus('อ่าน Firestore ไม่สำเร็จ: '+e.message,false);show(e.message);}
+  };
+</script>
+</body>
+</html>
