@@ -205,6 +205,50 @@ app.MapGet("/api/fingerprints/{id:guid}/download", async (Guid id, AppDbContext 
     return Results.File(await storage.ReadDecryptedAsync(item.EncryptedFileName, ct), "image/png", fileName);
 });
 
+app.MapDelete("/api/fingerprints/{id:guid}", async (Guid id, AppDbContext db, FingerprintStorageService storage, HttpRequest req, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(req, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
+    var item = await db.FingerprintImages.FirstOrDefaultAsync(x => x.Id == id, ct);
+    if (item is null) return Results.NotFound();
+    await storage.DeleteAsync(item.EncryptedFileName, ct);
+    db.FingerprintImages.Remove(item);
+    await db.SaveChangesAsync(ct);
+    return Results.NoContent();
+});
+
+app.MapDelete("/api/fingerprints/person/{personId:guid}/{fingerCode}/{position}/{sequenceNo:int}", async (Guid personId, string fingerCode, string position, int sequenceNo, AppDbContext db, FingerprintStorageService storage, HttpRequest req, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(req, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
+    if (!IsValidFinger(fingerCode) || !IsValidPosition(position) || sequenceNo <= 0) return Results.BadRequest("Invalid fingerprint target.");
+    var item = await db.FingerprintImages.FirstOrDefaultAsync(x => x.PersonId == personId && x.FingerCode == fingerCode && x.Position == position && x.SequenceNo == sequenceNo, ct);
+    if (item is null) return Results.NotFound();
+    await storage.DeleteAsync(item.EncryptedFileName, ct);
+    db.FingerprintImages.Remove(item);
+    await db.SaveChangesAsync(ct);
+    return Results.NoContent();
+});
+
+app.MapDelete("/api/fingerprints/person/{personId:guid}/{fingerCode}", async (Guid personId, string fingerCode, AppDbContext db, FingerprintStorageService storage, HttpRequest req, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(req, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
+    if (!IsValidFinger(fingerCode)) return Results.BadRequest("Invalid finger code.");
+    var items = await db.FingerprintImages.Where(x => x.PersonId == personId && x.FingerCode == fingerCode).ToListAsync(ct);
+    foreach (var item in items) await storage.DeleteAsync(item.EncryptedFileName, ct);
+    db.FingerprintImages.RemoveRange(items);
+    await db.SaveChangesAsync(ct);
+    return Results.Ok(new { deleted = items.Count });
+});
+
+app.MapDelete("/api/fingerprints/person/{personId:guid}", async (Guid personId, AppDbContext db, FingerprintStorageService storage, HttpRequest req, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(req, tokens, out var auth) || auth.Role is not "Admin") return Results.Forbid();
+    var items = await db.FingerprintImages.Where(x => x.PersonId == personId).ToListAsync(ct);
+    foreach (var item in items) await storage.DeleteAsync(item.EncryptedFileName, ct);
+    db.FingerprintImages.RemoveRange(items);
+    await db.SaveChangesAsync(ct);
+    return Results.Ok(new { deleted = items.Count });
+});
+
 app.MapFallbackToFile("index.html");
 app.Run();
 
