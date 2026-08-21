@@ -63,8 +63,9 @@ function App(){
 
   async function loadPersons(){try{setPersons(await api('/api/persons'+(search?`?search=${encodeURIComponent(search)}`:''),{},token))}catch(x){setErr(String(x))}}
   useEffect(()=>{if(token)loadPersons()},[token]);
-  async function loadFingerprints(personId:string){try{setImages(await api(`/api/fingerprints/person/${personId}`,{},token))}catch(x){setErr(String(x))}}
+  async function loadFingerprints(personId:string){try{const rows=await api(`/api/fingerprints/person/${personId}`,{},token);setImages(Array.isArray(rows)?rows:[])}catch(x){setErr(String(x))}}
   useEffect(()=>{if(selectedPerson)loadFingerprints(selectedPerson.id)},[selectedPerson]);
+  useEffect(()=>{if(view!=='fingerprints'||!selectedPerson)return;loadFingerprints(selectedPerson.id)},[view,selectedPerson]);
   const cellCounts=useMemo(()=>{const m:Record<string,number>={};for(const x of images){if(x.id===deletingId)continue;m[`${x.fingerCode}|${x.position}`]=(m[`${x.fingerCode}|${x.position}`]||0)+1}return m},[images,deletingId]);
   const selectedFingerImages=useMemo(()=>images.filter(x=>x.fingerCode===finger).sort((a,b)=>Date.parse(b.capturedAtUtc)-Date.parse(a.capturedAtUtc)||b.sequenceNo-a.sequenceNo),[images,finger]);
 
@@ -102,7 +103,7 @@ function App(){
   function showStored(item:GalleryItem){setSelectedImage(item);setGalleryError('');setErr('');touchActivity()}
   function askDelete(item:GalleryItem){setDeleteTarget(item);setErr('');setGalleryError('')}
   async function confirmDelete(){if(!selectedPerson||!deleteTarget)return;setDeleteBusy(true);setDeletingId(deleteTarget.id);const target=deleteTarget;try{await api(`/api/fingerprints/person/${selectedPerson.id}/${target.fingerCode}/${target.position}/${target.sequenceNo}`,{method:'DELETE'},token);setNotice(`ลบ ${target.fingerCode} / ${positionLabel(target.position)} #${target.sequenceNo} สำเร็จ`);setErr('');setDeleteTarget(null);window.setTimeout(()=>{setImages(v=>v.filter(x=>x.id!==target.id));setGallery(v=>v.filter(x=>x.id!==target.id));setSelectedImage(v=>v?.id===target.id?null:v);setDeletingId(null)},340)}catch(x){setDeletingId(null);setErr(String(x))}finally{setDeleteBusy(false)}}
-  function goFingerprints(p:Person){setSelectedPerson(p);setView('fingerprints');setFinger('L1');setPosition('center');setImages([]);setGallery([]);setSelectedImage(null);setNotice('');setErr('');setGalleryError('')}
+  function goFingerprints(p:Person){const same=selectedPerson?.id===p.id;setSelectedPerson(p);setView('fingerprints');setFinger('L1');setPosition('center');if(!same){setImages([]);setGallery([])}setSelectedImage(null);setNotice('');setErr('');setGalleryError('')}
   function onPersonSaved(p:Person){setPersons(v=>{const i=v.findIndex(x=>x.id===p.id);if(i<0)return[p,...v];const a=[...v];a[i]=p;return a});if(selectedPerson?.id===p.id)setSelectedPerson(p);setNotice('บันทึกข้อมูลลูกค้าแล้ว')}
   async function deletePerson(p:Person){if(!confirm(`ต้องการลบ ${p.personCode} ${p.firstName} ${p.lastName} หรือไม่?`))return;try{await api(`/api/persons/${p.id}`,{method:'DELETE'},token);setPersons(v=>v.filter(x=>x.id!==p.id));if(selectedPerson?.id===p.id){await closeScanner();setSelectedPerson(null);setView('persons')}setNotice('ลบข้อมูลแล้ว')}catch(x){setErr(String(x))}}
   function logout(){closeScanner();localStorage.removeItem('of_token');localStorage.removeItem('of_user');setToken('');setUser(null)}
