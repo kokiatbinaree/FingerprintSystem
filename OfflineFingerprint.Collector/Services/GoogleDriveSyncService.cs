@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using System.Net.Http.Json;
 using OfflineFingerprint.Collector.Data;
 using OfflineFingerprint.Collector.Models;
