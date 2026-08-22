@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useRef,useState}from'react';
 import{createRoot}from'react-dom/client';
 import'./styles.css';
 
-const API='http://localhost:5140';
+const API=`${window.location.protocol}//${window.location.hostname}:5140`;
 const AGENT='http://127.0.0.1:15271';
 const AGENT_WS='ws://127.0.0.1:15271/ws/preview';
 const IDLE_MS=120000;
