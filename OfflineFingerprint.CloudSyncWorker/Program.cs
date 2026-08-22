@@ -82,6 +82,11 @@ Console.WriteLine("Cloud Sync Worker stopped.");
 static async Task<int> ProcessPendingAsync(IServiceProvider root, CancellationToken ct)
 {
     List<Guid> ids;
+    int candidateCount;
+    int driveReadyCount = 0;
+    int firestoreReadyCount = 0;
+    int skippedRetryCount = 0;
+
     using (var scope = root.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -94,6 +99,7 @@ static async Task<int> ProcessPendingAsync(IServiceProvider root, CancellationTo
             .Select(x => new { x.Id })
             .ToListAsync(ct);
 
+        candidateCount = candidates.Count;
         ids = new List<Guid>(candidates.Count);
         foreach (var candidate in candidates)
         {
@@ -107,18 +113,29 @@ static async Task<int> ProcessPendingAsync(IServiceProvider root, CancellationTo
             var driveReady = driveRecord?.Status == "Synced" && !string.IsNullOrWhiteSpace(driveRecord.DriveFileId);
             var firestoreReady = firestoreRecord?.Status == "Synced";
 
+            if (driveReady) driveReadyCount++;
+            if (firestoreReady) firestoreReadyCount++;
+
             if (driveReady && firestoreReady)
                 continue;
 
             if (firestoreRecord?.Status == "Failed" && firestoreRecord.LastAttemptAtUtc.HasValue && firestoreRecord.LastAttemptAtUtc.Value > retryCutoff && driveReady)
+            {
+                skippedRetryCount++;
                 continue;
+            }
 
             if (driveRecord?.Status == "Failed" && driveRecord.LastAttemptAtUtc.HasValue && driveRecord.LastAttemptAtUtc.Value > retryCutoff)
+            {
+                skippedRetryCount++;
                 continue;
+            }
 
             ids.Add(candidate.Id);
         }
     }
+
+    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Scan: candidates={candidateCount}, driveSynced={driveReadyCount}, firestoreSynced={firestoreReadyCount}, queued={ids.Count}, retrySkipped={skippedRetryCount}");
 
     int synced = 0;
     foreach (var id in ids)
@@ -134,8 +151,10 @@ static async Task<int> ProcessPendingAsync(IServiceProvider root, CancellationTo
 
             if (!string.Equals(imageBefore.SyncStatus, "Synced", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(imageBefore.DriveFileId))
             {
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Drive sync start: {id}");
                 var driveSync = scope.ServiceProvider.GetRequiredService<GoogleDriveSyncService>();
                 await driveSync.SyncFingerprintAsync(id, ct);
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Drive sync done: {id}");
             }
 
             var image = await db.FingerprintImages.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
@@ -175,6 +194,7 @@ static async Task<int> ProcessPendingAsync(IServiceProvider root, CancellationTo
             {
                 var firestore = scope.ServiceProvider.GetRequiredService<FirestoreMetadataService>();
                 var link = $"https://drive.google.com/file/d/{image.DriveFileId}/view?usp=drivesdk";
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Firestore sync start: {person.PersonCode} / {image.FingerCode} / {image.Position} / #{image.SequenceNo}");
                 await firestore.UpsertFingerprintAsync(person, image, image.DriveFileId, link, ct);
 
                 firestoreRecord.Status = "Synced";
