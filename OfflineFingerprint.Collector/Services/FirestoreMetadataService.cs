@@ -24,7 +24,9 @@ public sealed class FirestoreMetadataService
         _projectId = configuration["Firebase:ProjectId"] ?? "fingerprintsystemmbt";
         _storageBucket = configuration["Firebase:BucketName"] ?? "fingerprintsystemmbt.firebasestorage.app";
 
-        var configured = configuration["Firebase:CredentialsPath"];
+        var configured = configuration["Firestore:CredentialsPath"]
+            ?? configuration["GoogleDrive:CredentialsPath"]
+            ?? configuration["Firebase:CredentialsPath"];
         var candidates = new[]
         {
             configured,
