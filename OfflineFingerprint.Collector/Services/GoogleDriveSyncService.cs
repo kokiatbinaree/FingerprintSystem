@@ -12,11 +12,7 @@ public sealed class GoogleDriveSyncService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
 
-    public GoogleDriveSyncService(
-        AppDbContext db,
-        FingerprintStorageService storage,
-        IHttpClientFactory httpClientFactory,
-        IConfiguration configuration)
+    public GoogleDriveSyncService(AppDbContext db, FingerprintStorageService storage, IHttpClientFactory httpClientFactory, IConfiguration configuration)
     {
         _db = db;
         _storage = storage;
@@ -35,17 +31,21 @@ public sealed class GoogleDriveSyncService
         if (record is not null && record.Status == "Synced" && !string.IsNullOrWhiteSpace(record.DriveFileId))
             return new { ok = true, status = record.Status, driveFileId = record.DriveFileId, webViewLink = record.DriveWebViewLink };
 
-        record ??= new CloudSyncRecord
+        if (record is null)
         {
-            Id = Guid.NewGuid(),
-            FingerprintImageId = fingerprintId,
-            Provider = "GoogleDrive"
-        };
+            record = new CloudSyncRecord
+            {
+                Id = Guid.NewGuid(),
+                FingerprintImageId = fingerprintId,
+                Provider = "GoogleDrive"
+            };
+            _db.Set<CloudSyncRecord>().Add(record);
+        }
+
         record.Status = "Syncing";
         record.AttemptCount++;
         record.LastAttemptAtUtc = DateTime.UtcNow;
         record.LastError = "";
-        _db.Update(record);
         await _db.SaveChangesAsync(ct);
 
         try
@@ -82,6 +82,7 @@ public sealed class GoogleDriveSyncService
             record.DriveWebViewLink = result.Result?.WebViewLink ?? "";
             record.SyncedAtUtc = DateTime.UtcNow;
             image.SyncStatus = "Synced";
+            image.DriveFileId = record.DriveFileId;
             await _db.SaveChangesAsync(ct);
 
             return new { ok = true, status = record.Status, driveFileId = record.DriveFileId, webViewLink = record.DriveWebViewLink };
