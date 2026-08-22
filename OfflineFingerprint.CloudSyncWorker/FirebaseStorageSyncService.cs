@@ -37,13 +37,16 @@ public sealed class FirebaseStorageSyncService
         var client = await StorageClient.CreateAsync(credential);
 
         await using var stream = new MemoryStream(png, writable: false);
+
+        // The object name is deterministic for a fingerprint image. Re-uploading the same
+        // fingerprint is intentionally idempotent: the local encrypted source is the
+        // authoritative copy, so a retry may safely replace the same object.
         await client.UploadObjectAsync(
             bucketName,
             objectName,
             "image/png",
             stream,
-            new UploadObjectOptions { IfGenerationMatch = 0 },
-            ct);
+            cancellationToken: ct);
 
         return (objectName, $"gs://{bucketName}/{objectName}");
     }
