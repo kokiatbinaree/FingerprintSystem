@@ -7,6 +7,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 {
     public DbSet<Person> Persons => Set<Person>();
     public DbSet<FingerprintImage> FingerprintImages => Set<FingerprintImage>();
+    public DbSet<CloudSyncRecord> CloudSyncRecords => Set<CloudSyncRecord>();
     public DbSet<AppUser> Users => Set<AppUser>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -18,5 +19,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasForeignKey(x => x.PersonId).OnDelete(DeleteBehavior.Cascade);
         modelBuilder.Entity<FingerprintImage>()
             .HasIndex(x => new { x.PersonId, x.FingerCode, x.Position, x.SequenceNo });
+        modelBuilder.Entity<CloudSyncRecord>()
+            .HasIndex(x => new { x.FingerprintImageId, x.Provider })
+            .IsUnique();
+        modelBuilder.Entity<CloudSyncRecord>()
+            .HasOne<FingerprintImage>()
+            .WithMany()
+            .HasForeignKey(x => x.FingerprintImageId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }
