@@ -33,8 +33,12 @@ Console.WriteLine($"SQLite path: {databasePath}");
 
 await db.Database.EnsureCreatedAsync();
 
-// Existing databases may have been created before CloudSyncRecord existed.
-// Ensure only the new table/index is present for this test harness.
+// Existing databases may have been created before the cloud-sync fields existed.
+// Keep this test harness backward-compatible without deleting or resetting data.
+await db.Database.ExecuteSqlRawAsync(@"
+ALTER TABLE FingerprintImages ADD COLUMN DriveFileId TEXT NULL;
+");
+
 await db.Database.ExecuteSqlRawAsync(@"
 CREATE TABLE IF NOT EXISTS CloudSyncRecords (
     Id TEXT NOT NULL CONSTRAINT PK_CloudSyncRecords PRIMARY KEY,
@@ -52,9 +56,10 @@ CREATE TABLE IF NOT EXISTS CloudSyncRecords (
 );");
 await db.Database.ExecuteSqlRawAsync(@"
 CREATE UNIQUE INDEX IF NOT EXISTS IX_CloudSyncRecords_FingerprintImageId_Provider
-ON CloudSyncRecords (FingerprintImageId, Provider);");
+ON CloudSyncRecords (FingerprintImageId, Provider);
+");
 
-var fingerprint = await db.FingerprintImages.AsNoTracking().FirstOrDefaultAsync();
+var fingerprint = await db.FingerprintImages.OrderBy(x => x.CapturedAtUtc).FirstOrDefaultAsync();
 if (fingerprint is null)
 {
     var person = await db.Persons.FirstOrDefaultAsync(x => x.PersonCode == "SYNC-TEST");
