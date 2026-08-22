@@ -33,33 +33,16 @@ Console.WriteLine($"SQLite path: {databasePath}");
 
 await db.Database.EnsureCreatedAsync();
 
-// Existing databases may have been created before the cloud-sync fields existed.
-// Keep this test harness backward-compatible without deleting or resetting data.
-await db.Database.ExecuteSqlRawAsync(@"
-ALTER TABLE FingerprintImages ADD COLUMN DriveFileId TEXT NULL;
-");
+// Existing databases may predate the CloudSyncRecord/DriveFileId additions.
+// Apply only the missing schema elements; never delete or recreate the database.
+await EnsureDriveFileIdColumnAsync(db);
+await EnsureCloudSyncSchemaAsync(db);
 
-await db.Database.ExecuteSqlRawAsync(@"
-CREATE TABLE IF NOT EXISTS CloudSyncRecords (
-    Id TEXT NOT NULL CONSTRAINT PK_CloudSyncRecords PRIMARY KEY,
-    FingerprintImageId TEXT NOT NULL,
-    Provider TEXT NOT NULL,
-    Status TEXT NOT NULL,
-    DriveFileId TEXT NOT NULL,
-    DriveWebViewLink TEXT NOT NULL,
-    LastError TEXT NOT NULL,
-    AttemptCount INTEGER NOT NULL,
-    LastAttemptAtUtc TEXT NULL,
-    SyncedAtUtc TEXT NULL,
-    CONSTRAINT FK_CloudSyncRecords_FingerprintImages_FingerprintImageId
-        FOREIGN KEY (FingerprintImageId) REFERENCES FingerprintImages (Id) ON DELETE CASCADE
-);");
-await db.Database.ExecuteSqlRawAsync(@"
-CREATE UNIQUE INDEX IF NOT EXISTS IX_CloudSyncRecords_FingerprintImageId_Provider
-ON CloudSyncRecords (FingerprintImageId, Provider);
-");
+var fingerprint = await db.FingerprintImages
+    .AsNoTracking()
+    .OrderBy(x => x.CapturedAtUtc)
+    .FirstOrDefaultAsync();
 
-var fingerprint = await db.FingerprintImages.OrderBy(x => x.CapturedAtUtc).FirstOrDefaultAsync();
 if (fingerprint is null)
 {
     var person = await db.Persons.FirstOrDefaultAsync(x => x.PersonCode == "SYNC-TEST");
@@ -116,7 +99,55 @@ Console.WriteLine($"Syncing fingerprint {fingerprint.Id} ...");
 var result = await sync.SyncFingerprintAsync(fingerprint.Id, CancellationToken.None);
 Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(result, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
 
-var saved = await db.Set<CloudSyncRecord>().AsNoTracking().FirstAsync(x => x.FingerprintImageId == fingerprint.Id && x.Provider == "GoogleDrive");
+var saved = await db.CloudSyncRecords
+    .AsNoTracking()
+    .FirstAsync(x => x.FingerprintImageId == fingerprint.Id && x.Provider == "GoogleDrive");
 Console.WriteLine($"Cloud status: {saved.Status}");
 Console.WriteLine($"Drive file id: {saved.DriveFileId}");
 Console.WriteLine($"Drive link: {saved.DriveWebViewLink}");
+
+static async Task EnsureDriveFileIdColumnAsync(AppDbContext db)
+{
+    var hasColumn = false;
+    await using var connection = db.Database.GetDbConnection();
+    if (connection.State != System.Data.ConnectionState.Open)
+        await connection.OpenAsync();
+
+    await using var command = connection.CreateCommand();
+    command.CommandText = "PRAGMA table_info(FingerprintImages);";
+    await using var reader = await command.ExecuteReaderAsync();
+    while (await reader.ReadAsync())
+    {
+        if (string.Equals(reader.GetString(1), "DriveFileId", StringComparison.OrdinalIgnoreCase))
+        {
+            hasColumn = true;
+            break;
+        }
+    }
+
+    if (!hasColumn)
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE FingerprintImages ADD COLUMN DriveFileId TEXT NULL;");
+}
+
+static async Task EnsureCloudSyncSchemaAsync(AppDbContext db)
+{
+    await db.Database.ExecuteSqlRawAsync(@"
+CREATE TABLE IF NOT EXISTS CloudSyncRecords (
+    Id TEXT NOT NULL CONSTRAINT PK_CloudSyncRecords PRIMARY KEY,
+    FingerprintImageId TEXT NOT NULL,
+    Provider TEXT NOT NULL,
+    Status TEXT NOT NULL,
+    DriveFileId TEXT NOT NULL,
+    DriveWebViewLink TEXT NOT NULL,
+    LastError TEXT NOT NULL,
+    AttemptCount INTEGER NOT NULL,
+    LastAttemptAtUtc TEXT NULL,
+    SyncedAtUtc TEXT NULL,
+    CONSTRAINT FK_CloudSyncRecords_FingerprintImages_FingerprintImageId
+        FOREIGN KEY (FingerprintImageId) REFERENCES FingerprintImages (Id) ON DELETE CASCADE
+);");
+
+    await db.Database.ExecuteSqlRawAsync(@"
+CREATE UNIQUE INDEX IF NOT EXISTS IX_CloudSyncRecords_FingerprintImageId_Provider
+ON CloudSyncRecords (FingerprintImageId, Provider);");
+}
