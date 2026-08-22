@@ -11,7 +11,6 @@ public sealed class FirestoreMetadataService
 {
     private const string DatastoreScope = "https://www.googleapis.com/auth/datastore";
     private readonly SemaphoreSlim gate = new(1, 1);
-    private GoogleWebAuthorizationBroker? _broker;
     private UserCredential? credential;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _projectId;
@@ -22,9 +21,22 @@ public sealed class FirestoreMetadataService
     {
         _httpClientFactory = httpClientFactory;
         _projectId = configuration["Firebase:ProjectId"] ?? "fingerprintsystemmbt";
-        _credentialsPath = configuration["Firebase:CredentialsPath"]
-            ?? Path.Combine("..", "..", "Collector.Agent", "secrets", "google-drive", "credentials.json");
-        _credentialsPath = Path.GetFullPath(_credentialsPath);
+
+        var configured = configuration["Firebase:CredentialsPath"];
+        var candidates = new[]
+        {
+            configured,
+            Path.Combine(AppContext.BaseDirectory, "secrets", "google-drive", "credentials.json"),
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "Collector.Agent", "secrets", "google-drive", "credentials.json"),
+            Path.Combine(Directory.GetCurrentDirectory(), "Collector.Agent", "secrets", "google-drive", "credentials.json")
+        };
+
+        _credentialsPath = candidates
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(Path.GetFullPath)
+            .FirstOrDefault(File.Exists)
+            ?? Path.GetFullPath(candidates.First(p => !string.IsNullOrWhiteSpace(p))!);
+
         _tokenPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "FingerprintSystemMBT", "Firestore", "token");
@@ -77,16 +89,15 @@ public sealed class FirestoreMetadataService
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
         if (body is not null)
-        {
             request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
-        }
 
         var response = await client.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode)
         {
             var error = await response.Content.ReadAsStringAsync(ct);
+            var status = (int)response.StatusCode;
             response.Dispose();
-            throw new InvalidOperationException($"Firestore request failed: HTTP {(int)response.StatusCode} {error}");
+            throw new InvalidOperationException($"Firestore request failed: HTTP {status} {error}");
         }
 
         return response;
