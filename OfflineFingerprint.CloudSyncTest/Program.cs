@@ -1,23 +1,21 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Configuration;
 using OfflineFingerprint.Collector.Data;
 using OfflineFingerprint.Collector.Models;
 using OfflineFingerprint.Collector.Services;
 
 var collectorPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "OfflineFingerprint.Collector"));
+var dataPath = Path.Combine(collectorPath, "data");
+Directory.CreateDirectory(dataPath);
+var databasePath = Path.Combine(dataPath, "fingerprint.db");
+
 var host = Host.CreateDefaultBuilder(args)
     .UseContentRoot(collectorPath)
-    .ConfigureAppConfiguration((_, config) =>
-    {
-        config.Sources.Clear();
-        config.AddJsonFile(Path.Combine(collectorPath, "appsettings.json"), optional: false, reloadOnChange: false);
-    })
-    .ConfigureServices((context, services) =>
+    .ConfigureServices(services =>
     {
         services.AddDbContext<AppDbContext>(o =>
-            o.UseSqlite(context.Configuration.GetConnectionString("Default")));
+            o.UseSqlite($"Data Source={databasePath}"));
         services.AddSingleton<LocalKeyService>();
         services.AddSingleton<FingerprintStorageService>();
         services.AddHttpClient();
@@ -30,9 +28,13 @@ var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 var storage = scope.ServiceProvider.GetRequiredService<FingerprintStorageService>();
 var sync = scope.ServiceProvider.GetRequiredService<GoogleDriveSyncService>();
 
+Console.WriteLine($"Collector path: {collectorPath}");
+Console.WriteLine($"SQLite path: {databasePath}");
+
 await db.Database.EnsureCreatedAsync();
 
-// Existing databases were created before CloudSyncRecord existed. Ensure only the new table/index is present.
+// Existing databases may have been created before CloudSyncRecord existed.
+// Ensure only the new table/index is present for this test harness.
 await db.Database.ExecuteSqlRawAsync(@"
 CREATE TABLE IF NOT EXISTS CloudSyncRecords (
     Id TEXT NOT NULL CONSTRAINT PK_CloudSyncRecords PRIMARY KEY,
