@@ -10,7 +10,7 @@ const string bucketName = "fingerprintsystemmbt.firebasestorage.app";
 
 var collectorPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "OfflineFingerprint.Collector"));
 var databasePath = Path.Combine(collectorPath, "data", "fingerprint.db");
-var credentialsPath = Path.GetFullPath(Path.Combine(collectorPath, "..", "Collector.Agent", "secrets", "google-drive", "credentials.json"));
+var credentialsPath = Path.GetFullPath(Path.Combine(collectorPath, "..", "Collector.Agent", "secrets", "firebase", "service-account.json"));
 
 Console.WriteLine("FingerprintSystem Firebase Storage Test");
 Console.WriteLine($"Project: {projectId}");
@@ -20,7 +20,7 @@ Console.WriteLine($"SQLite: {databasePath}");
 Console.WriteLine($"Credentials: {credentialsPath}");
 
 if (!File.Exists(credentialsPath))
-    throw new FileNotFoundException("ไม่พบ Google credentials", credentialsPath);
+    throw new FileNotFoundException("ไม่พบ Firebase service account credentials", credentialsPath);
 
 var testEnvironment = new TestHostEnvironment(collectorPath);
 var services = new ServiceCollection();
