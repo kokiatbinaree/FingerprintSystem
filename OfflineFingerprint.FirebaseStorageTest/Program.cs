@@ -22,14 +22,12 @@ Console.WriteLine($"Credentials: {credentialsPath}");
 if (!File.Exists(credentialsPath))
     throw new FileNotFoundException("ไม่พบ Google credentials", credentialsPath);
 
+var testEnvironment = new TestHostEnvironment(collectorPath);
 var services = new ServiceCollection();
+services.AddSingleton<Microsoft.Extensions.Hosting.IHostEnvironment>(testEnvironment);
 services.AddDbContext<AppDbContext>(o => o.UseSqlite($"Data Source={databasePath}"));
 services.AddSingleton<LocalKeyService>();
-services.AddSingleton<FingerprintStorageService>(sp =>
-{
-    var env = new TestHostEnvironment(collectorPath);
-    return new FingerprintStorageService(env, sp.GetRequiredService<LocalKeyService>());
-});
+services.AddSingleton<FingerprintStorageService>();
 
 await using var provider = services.BuildServiceProvider();
 using var scope = provider.CreateScope();
