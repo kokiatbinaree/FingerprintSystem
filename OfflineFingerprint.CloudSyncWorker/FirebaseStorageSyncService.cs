@@ -1,5 +1,6 @@
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Storage.V1;
+using Microsoft.Extensions.Configuration;
 using OfflineFingerprint.Collector.Models;
 using OfflineFingerprint.Collector.Services;
 
