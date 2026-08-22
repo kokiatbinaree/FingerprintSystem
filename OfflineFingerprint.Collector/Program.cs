@@ -219,8 +219,7 @@ app.MapDelete("/api/fingerprints/{id:guid}", async (Guid id, AppDbContext db, Fi
 app.MapDelete("/api/fingerprints/person/{personId:guid}/{fingerCode}/{position}/{sequenceNo:int}", async (Guid personId, string fingerCode, string position, int sequenceNo, AppDbContext db, FingerprintStorageService storage, HttpRequest req, TokenService tokens, CancellationToken ct) =>
 {
     if (!TryAuth(req, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
-    if (!IsValidFinger(fingerCode)) return Results.BadRequest("Invalid finger code.");
-    if (!IsValidPosition(position)) return Results.BadRequest("Invalid position.");
+    if (!IsValidFinger(fingerCode) || !IsValidPosition(position) || sequenceNo <= 0) return Results.BadRequest("Invalid fingerprint target.");
     var item = await db.FingerprintImages.FirstOrDefaultAsync(x => x.PersonId == personId && x.FingerCode == fingerCode && x.Position == position && x.SequenceNo == sequenceNo, ct);
     if (item is null) return Results.NotFound();
     await storage.DeleteAsync(item.EncryptedFileName, ct);
@@ -229,19 +228,41 @@ app.MapDelete("/api/fingerprints/person/{personId:guid}/{fingerCode}/{position}/
     return Results.NoContent();
 });
 
+app.MapDelete("/api/fingerprints/person/{personId:guid}/{fingerCode}", async (Guid personId, string fingerCode, AppDbContext db, FingerprintStorageService storage, HttpRequest req, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(req, tokens, out var auth) || auth.Role is not ("Admin" or "Collector")) return Results.Forbid();
+    if (!IsValidFinger(fingerCode)) return Results.BadRequest("Invalid finger code.");
+    var items = await db.FingerprintImages.Where(x => x.PersonId == personId && x.FingerCode == fingerCode).ToListAsync(ct);
+    foreach (var item in items) await storage.DeleteAsync(item.EncryptedFileName, ct);
+    db.FingerprintImages.RemoveRange(items);
+    await db.SaveChangesAsync(ct);
+    return Results.Ok(new { deleted = items.Count });
+});
+
+app.MapDelete("/api/fingerprints/person/{personId:guid}", async (Guid personId, AppDbContext db, FingerprintStorageService storage, HttpRequest req, TokenService tokens, CancellationToken ct) =>
+{
+    if (!TryAuth(req, tokens, out var auth) || auth.Role is not "Admin") return Results.Forbid();
+    var items = await db.FingerprintImages.Where(x => x.PersonId == personId).ToListAsync(ct);
+    foreach (var item in items) await storage.DeleteAsync(item.EncryptedFileName, ct);
+    db.FingerprintImages.RemoveRange(items);
+    await db.SaveChangesAsync(ct);
+    return Results.Ok(new { deleted = items.Count });
+});
+
+app.MapFallbackToFile("index.html");
 app.Run();
 
-static bool TryAuth(HttpRequest request, TokenService tokens, out TokenService.AuthContext auth)
+static bool TryAuth(HttpRequest request, TokenService tokens, out TokenService.TokenInfo info)
 {
-    auth = default!;
-    string? value = request.Headers.Authorization.FirstOrDefault();
-    if (string.IsNullOrWhiteSpace(value) || !value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return false;
-    return tokens.TryValidate(value[7..].Trim(), out auth);
+    info = null!;
+    string? header = request.Headers.Authorization.FirstOrDefault();
+    if (string.IsNullOrWhiteSpace(header) || !header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return false;
+    return tokens.TryGet(header[7..].Trim(), out info);
 }
 
-static bool IsValidFinger(string value) => new[] { "L1", "L2", "L3", "L4", "L5", "R1", "R2", "R3", "R4", "R5" }.Contains(value);
-static bool IsValidPosition(string value) => new[] { "left", "center", "right" }.Contains(value);
+static bool IsValidFinger(string value) => value is "L1" or "L2" or "L3" or "L4" or "L5" or "R1" or "R2" or "R3" or "R4" or "R5";
+static bool IsValidPosition(string value) => value is "left" or "center" or "right";
 
-record LoginRequest(string Username, string Password);
-record CaptureRequest(Guid PersonId, string FingerCode, string Position);
-record ConfirmCaptureRequest(Guid PersonId, string FingerCode, string Position, string GrayBase64, int Width, int Height);
+public sealed record LoginRequest(string Username, string Password);
+public sealed record CaptureRequest(Guid PersonId, string FingerCode, string Position);
+public sealed record ConfirmCaptureRequest(Guid PersonId, string FingerCode, string Position, int Width, int Height, string GrayBase64);
