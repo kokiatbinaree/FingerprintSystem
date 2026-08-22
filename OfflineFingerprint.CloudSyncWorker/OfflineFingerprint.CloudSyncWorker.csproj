@@ -8,5 +8,6 @@
   <ItemGroup>
     <ProjectReference Include="..\OfflineFingerprint.Collector\OfflineFingerprint.Collector.csproj" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.8" />
+    <PackageReference Include="Google.Cloud.Storage.V1" Version="4.15.0" />
   </ItemGroup>
 </Project>
