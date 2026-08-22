@@ -1,94 +1,27 @@
 <!doctype html>
 <html lang="th">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Fingerprint Cloud Gallery</title>
-  <style>
-    *{box-sizing:border-box}body{margin:0;font-family:"Segoe UI",Tahoma,sans-serif;background:#eef1f5;color:#172033;padding:24px}.wrap{max-width:1100px;margin:auto}.card{background:#fff;border:1px solid #dce2e8;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 6px 24px #0000000a}.top{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.field{flex:1;min-width:220px}.field label{display:block;font-weight:700;margin-bottom:6px}.field input{width:100%;padding:10px 12px;border:1px solid #cfd6df;border-radius:8px}button{padding:10px 14px;border-radius:9px;border:1px solid #cdd5df;background:#fff;cursor:pointer;font-weight:700}.primary{background:#174b87;color:#fff;border-color:#174b87}.danger{background:#fff0f0;color:#a21d1d}.status{margin-top:12px;padding:10px 12px;border-radius:8px;background:#f7f9fb}.ok{background:#ecfdf3;color:#166534}.err{background:#fff0f0;color:#a21d1d}.hidden{display:none}.list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}.item{border:1px solid #dfe4ea;border-radius:12px;overflow:hidden;background:#fff}.item img{width:100%;height:220px;object-fit:contain;background:#111}.body{padding:12px}.body strong{display:block;font-size:16px}.meta{color:#667085;font-size:12px;line-height:1.7}.actions{display:flex;gap:7px;margin-top:10px}.pill{display:inline-block;padding:3px 7px;border-radius:99px;background:#ecfdf3;color:#166534;font-size:11px;font-weight:700}.muted{color:#667085}.logout{float:right}.small{font-size:12px}.empty{text-align:center;padding:40px;color:#667085}
-  </style>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Fingerprint Cloud Gallery</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:"Segoe UI",Tahoma,sans-serif;background:#eef1f5;color:#172033;padding:24px}.wrap{max-width:1100px;margin:auto}.card{background:#fff;border:1px solid #dce2e8;border-radius:14px;padding:18px;margin-bottom:16px;box-shadow:0 6px 24px #0000000a}.top{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.field{flex:1;min-width:220px}.field label{display:block;font-weight:700;margin-bottom:6px}.field input{width:100%;padding:10px 12px;border:1px solid #cfd6df;border-radius:8px}button{padding:10px 14px;border-radius:9px;border:1px solid #cdd5df;background:#fff;cursor:pointer;font-weight:700}.primary{background:#174b87;color:#fff;border-color:#174b87}.danger{background:#fff0f0;color:#a21d1d}.status{margin-top:12px;padding:10px 12px;border-radius:8px;background:#f7f9fb}.ok{background:#ecfdf3;color:#166534}.err{background:#fff0f0;color:#a21d1d}.hidden{display:none}.list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}.item{border:1px solid #dfe4ea;border-radius:12px;overflow:hidden;background:#fff}.item img{width:100%;height:220px;object-fit:contain;background:#111}.body{padding:12px}.body strong{display:block;font-size:16px}.meta{color:#667085;font-size:12px;line-height:1.7}.actions{display:flex;gap:7px;margin-top:10px}.pill{display:inline-block;padding:3px 7px;border-radius:99px;background:#ecfdf3;color:#166534;font-size:11px;font-weight:700}.muted{color:#667085}.logout{float:right}.small{font-size:12px}.empty{text-align:center;padding:40px;color:#667085}
+</style>
 </head>
 <body>
 <div class="wrap">
-  <div class="card">
-    <button class="logout" id="logout">ออกจาก Firebase</button>
-    <h1 style="margin:0 0 6px">Fingerprint Cloud Gallery</h1>
-    <div class="muted">ดูข้อมูลลายนิ้วมือจาก Firestore และเปิดรูปจาก Google Drive</div>
-  </div>
-
-  <div class="card" id="loginCard">
-    <h2 style="margin-top:0">เข้าสู่ระบบ Firebase</h2>
-    <div class="top">
-      <div class="field"><label>Email</label><input id="email" type="email" placeholder="test@example.com"></div>
-      <div class="field"><label>Password</label><input id="password" type="password"></div>
-      <button class="primary" id="login">เข้าสู่ระบบ</button>
-    </div>
-  </div>
-
-  <div class="card hidden" id="searchCard">
-    <div class="top">
-      <div class="field"><label>รหัสลูกค้า (PersonCode)</label><input id="personCode" value="P000002" placeholder="เช่น P000002"></div>
-      <button class="primary" id="search">ค้นหาลายนิ้วมือ</button>
-    </div>
-    <div id="status" class="status">ยังไม่ได้ค้นหา</div>
-  </div>
-
-  <div class="card hidden" id="resultCard">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div><h2 style="margin:0">ผลการค้นหา</h2><div class="muted small" id="summary"></div></div><button class="danger" id="clear">ล้างผล</button></div>
-    <div id="results" class="list" style="margin-top:14px"></div>
-  </div>
+  <div class="card"><button class="logout" id="logout">ออกจากระบบ</button><h1 style="margin:0 0 6px">Fingerprint Cloud Gallery</h1><div class="muted">ดูข้อมูลลายนิ้วมือจาก Firestore และเปิดรูปจาก Google Drive</div></div>
+  <div class="card" id="loginCard"><h2 style="margin-top:0">เข้าสู่ระบบระบบกลาง</h2><div class="top"><div class="field"><label>Username</label><input id="username" value="admin"></div><div class="field"><label>Password</label><input id="password" type="password" value="ChangeMe123!"></div><button class="primary" id="login">เข้าสู่ระบบ</button></div></div>
+  <div class="card hidden" id="searchCard"><div class="top"><div class="field"><label>รหัสลูกค้า (PersonCode)</label><input id="personCode" value="P000002" placeholder="เช่น P000002"></div><button class="primary" id="search">ค้นหาลายนิ้วมือ</button></div><div id="status" class="status">ยังไม่ได้ค้นหา</div></div>
+  <div class="card hidden" id="resultCard"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div><h2 style="margin:0">ผลการค้นหา</h2><div class="muted small" id="summary"></div></div><button class="danger" id="clear">ล้างผล</button></div><div id="results" class="list" style="margin-top:14px"></div></div>
 </div>
-
 <script type="module">
-  import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js';
-  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-auth.js';
-  import { getFirestore, collection, query, where, orderBy, getDocs } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore.js';
-
-  const firebaseConfig={
-    apiKey:'AIzaSyDtqrlZRoQ5EjBxLdIklHm3RbZPPlywCzQ',
-    authDomain:'fingerprintsystemmbt.firebaseapp.com',
-    projectId:'fingerprintsystemmbt',
-    storageBucket:'fingerprintsystemmbt.firebasestorage.app',
-    messagingSenderId:'225601369153',
-    appId:'1:225601369153:web:d333a7872cdc026319c2c0'
-  };
-  const app=initializeApp(firebaseConfig); const auth=getAuth(app); const db=getFirestore(app);
-  const $=id=>document.getElementById(id);
-  function status(text,ok){const el=$('status');el.textContent=text;el.className='status '+(ok?'ok':'err')}
-  function field(data,k){return data?.[k] ?? ''}
-  function driveImageUrl(id){return `https://drive.google.com/uc?export=view&id=${encodeURIComponent(id)}`}
-  function driveViewUrl(id){return `https://drive.google.com/file/d/${encodeURIComponent(id)}/view?usp=drivesdk`}
-  function render(rows){
-    $('resultCard').classList.remove('hidden'); $('summary').textContent=`พบ ${rows.length} รายการ`;
-    if(!rows.length){$('results').innerHTML='<div class="empty">ไม่พบลายนิ้วมือของ Person นี้</div>';return}
-    $('results').innerHTML=rows.map(r=>{
-      const d=r.data; const driveId=field(d,'driveFileId');
-      return `<article class="item">
-        <img src="${driveImageUrl(driveId)}" alt="${field(d,'fingerCode')}" onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
-        <div style="display:none;height:220px;background:#111;color:#fff;align-items:center;justify-content:center;text-align:center;padding:20px">เปิดรูปตัวอย่างไม่ได้<br>กด “เปิด Google Drive” ด้านล่าง</div>
-        <div class="body"><strong>${field(d,'personCode')} — ${field(d,'firstName')} ${field(d,'lastName')}</strong>
-          <div class="meta">นิ้ว: <b>${field(d,'fingerCode')}</b> · ตำแหน่ง: <b>${field(d,'position')}</b> · ครั้งที่ <b>#${field(d,'sequenceNo')}</b><br>สถานะ: <span class="pill">${field(d,'syncStatus')}</span><br>Fingerprint ID: ${field(d,'fingerprintId')}</div>
-          <div class="actions"><a href="${driveViewUrl(driveId)}" target="_blank" rel="noopener"><button class="primary">เปิด Google Drive</button></a><button onclick='window.copyLink(${JSON.stringify(driveViewUrl(driveId))})'>คัดลอกลิงก์</button></div>
-        </div></article>`
-    }).join('');
-  }
-  window.copyLink=async url=>{try{await navigator.clipboard.writeText(url);status('คัดลอกลิงก์ Google Drive แล้ว',true)}catch{status('คัดลอกลิงก์ไม่สำเร็จ',false)}};
-
-  $('login').onclick=async()=>{try{const r=await signInWithEmailAndPassword(auth,$('email').value.trim(),$('password').value);status(`Firebase Login สำเร็จ: ${r.user.email}`,true)}catch(e){status('Login Firebase ไม่สำเร็จ: '+e.message,false)}};
-  $('logout').onclick=async()=>{await signOut(auth)};
-  $('clear').onclick=()=>{$('results').innerHTML='';$('summary').textContent='';status('ล้างผลแล้ว',true)};
-  $('search').onclick=async()=>{
-    const code=$('personCode').value.trim(); if(!code){status('กรุณาระบุรหัสลูกค้า',false);return}
-    const user=auth.currentUser; if(!user){status('กรุณา Login Firebase ก่อน',false);return}
-    status('กำลังค้นหา Firestore...',true); $('resultCard').classList.add('hidden');
-    try{
-      const q=query(collection(db,'fingerprints'),where('personCode','==',code));
-      const snap=await getDocs(q); const rows=[]; snap.forEach(doc=>rows.push({id:doc.id,data:doc.data()}));
-      rows.sort((a,b)=>{const ac=String(field(a.data,'capturedAtUtc'));const bc=String(field(b.data,'capturedAtUtc'));return bc.localeCompare(ac)});
-      render(rows); status(`อ่าน Firestore สำเร็จ: ${rows.length} รายการ`,true)
-    }catch(e){status('อ่าน Firestore ไม่สำเร็จ: '+e.message,false)}
-  };
-  onAuthStateChanged(auth,user=>{if(user){$('loginCard').classList.add('hidden');$('searchCard').classList.remove('hidden'); status(`เข้าสู่ระบบแล้ว: ${user.email}`,true)}else{$('loginCard').classList.remove('hidden');$('searchCard').classList.add('hidden');$('resultCard').classList.add('hidden')}});
-</script>
-</body>
-</html>
+const API='http://localhost:5140';let token='';const $=id=>document.getElementById(id);
+function status(text,ok=false){const el=$('status');el.textContent=text;el.className='status '+(ok?'ok':'err')}
+async function api(path,init={}){const h=new Headers(init.headers||{});h.set('Content-Type','application/json');if(token)h.set('Authorization','Bearer '+token);const r=await fetch(API+path,{...init,headers:h});let d=null;try{d=await r.json()}catch{}if(!r.ok)throw new Error(d?.message||d?.title||`HTTP ${r.status}`);return d}
+$('login').onclick=async()=>{try{const r=await api('/api/auth/login',{method:'POST',body:JSON.stringify({username:$('username').value.trim(),password:$('password').value})});token=r.token;localStorage.setItem('of_token',token);localStorage.setItem('of_user',JSON.stringify(r.user||null));$('loginCard').classList.add('hidden');$('searchCard').classList.remove('hidden');status(`Login สำเร็จ: ${r.user?.displayName||r.user?.username||''}`,true)}catch(e){token='';status('Login ไม่สำเร็จ: '+e.message)}};
+$('logout').onclick=()=>{token='';localStorage.removeItem('of_token');localStorage.removeItem('of_user');$('loginCard').classList.remove('hidden');$('searchCard').classList.add('hidden');$('resultCard').classList.add('hidden');status('ออกจากระบบแล้ว',true)};
+$('clear').onclick=()=>{$('results').innerHTML='';$('summary').textContent='';status('ล้างผลแล้ว',true)};
+$('search').onclick=async()=>{if(!token){status('กรุณา Login ก่อน');return}const code=$('personCode').value.trim();if(!code){status('กรุณากรอก PersonCode');return}try{status('กำลังค้นหา...');const people=await api('/api/persons?search='+encodeURIComponent(code));const p=Array.isArray(people)?people.find(x=>x.personCode===code)||people[0]:null;if(!p)throw new Error('ไม่พบ PersonCode นี้');const rows=await api('/api/fingerprints/person/'+p.id);render(p,Array.isArray(rows)?rows:[]);status(`โหลดข้อมูล Local สำเร็จ: ${rows.length} รายการ`,true)}catch(e){$('resultCard').classList.remove('hidden');$('results').innerHTML='<div class="empty">'+e.message+'</div>';status('ค้นหาไม่สำเร็จ: '+e.message)}};
+function render(p,rows){$('resultCard').classList.remove('hidden');$('summary').textContent=`พบ ${rows.length} รายการในฐานข้อมูลเครื่องนี้`;if(!rows.length){$('results').innerHTML='<div class="empty">Person นี้ยังไม่มีลายนิ้วมือ</div>';return}$('results').innerHTML=rows.map(x=>`<article class="item"><div class="body"><strong>${p.personCode} — ${p.firstName||''} ${p.lastName||''}</strong><div class="meta">นิ้ว: <b>${x.fingerCode}</b> · ตำแหน่ง: <b>${x.position}</b> · ครั้งที่ <b>#${x.sequenceNo}</b><br>สถานะ Local: <b>${x.syncStatus||'-'}</b><br>DriveFileId: ${x.driveFileId||'-'}</div><div class="actions">${x.driveFileId?`<a href="https://drive.google.com/file/d/${encodeURIComponent(x.driveFileId)}/view?usp=drivesdk" target="_blank" rel="noopener"><button class="primary">เปิดรูป Google Drive</button></a>`:'<span class="muted">ยังไม่มีไฟล์ Drive</span>'}</div></div></article>`).join('')}
+const saved=localStorage.getItem('of_token');if(saved){token=saved;$('loginCard').classList.add('hidden');$('searchCard').classList.remove('hidden');status('ใช้ Session เดิมของระบบ',true)}
+</script></body></html>
