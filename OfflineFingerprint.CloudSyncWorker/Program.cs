@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using OfflineFingerprint.CloudSyncWorker;
 using OfflineFingerprint.Collector.Data;
 using OfflineFingerprint.Collector.Models;
 using OfflineFingerprint.Collector.Services;
@@ -10,14 +11,17 @@ var collectorPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, ".."
 var dataPath = Path.Combine(collectorPath, "data");
 Directory.CreateDirectory(dataPath);
 var databasePath = Path.Combine(dataPath, "fingerprint.db");
-var credentialsPath = Path.GetFullPath(Path.Combine(collectorPath, "..", "Collector.Agent", "secrets", "google-drive", "credentials.json"));
+var firebaseCredentialsPath = Path.GetFullPath(Path.Combine(collectorPath, "..", "Collector.Agent", "secrets", "firebase", "service-account.json"));
+var driveCredentialsPath = Path.GetFullPath(Path.Combine(collectorPath, "..", "Collector.Agent", "secrets", "google-drive", "credentials.json"));
 
 var configuration = new ConfigurationBuilder()
     .AddInMemoryCollection(new Dictionary<string, string?>
     {
         ["Futronic:CollectorAgentBaseUrl"] = "http://127.0.0.1:15271",
         ["Firebase:ProjectId"] = "fingerprintsystemmbt",
-        ["Firebase:CredentialsPath"] = credentialsPath
+        ["Firebase:BucketName"] = "fingerprintsystemmbt.firebasestorage.app",
+        ["Firebase:CredentialsPath"] = firebaseCredentialsPath,
+        ["GoogleDrive:CredentialsPath"] = driveCredentialsPath
     })
     .Build();
 
@@ -32,23 +36,19 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddHttpClient();
         services.AddScoped<GoogleDriveSyncService>();
         services.AddSingleton<FirestoreMetadataService>();
+        services.AddSingleton<FirebaseStorageSyncService>();
     })
     .Build();
 
 Console.WriteLine("FingerprintSystem Cloud Sync Worker");
-Console.WriteLine($"Collector path: {collectorPath}");
-Console.WriteLine($"SQLite path: {databasePath}");
 Console.WriteLine($"Firestore project: {configuration["Firebase:ProjectId"]}");
-Console.WriteLine("Watching for Drive and Firestore sync. Press Ctrl+C to stop.");
+Console.WriteLine($"Firebase Storage bucket: {configuration["Firebase:BucketName"]}");
+Console.WriteLine("Watching for Drive, Firestore and Firebase Storage sync. Press Ctrl+C to stop.");
 
 await EnsureSchemaAsync(host.Services, CancellationToken.None);
 
 using var stopCts = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) =>
-{
-    e.Cancel = true;
-    stopCts.Cancel();
-};
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; stopCts.Cancel(); };
 
 while (!stopCts.IsCancellationRequested)
 {
@@ -56,204 +56,122 @@ while (!stopCts.IsCancellationRequested)
     {
         var synced = await ProcessPendingAsync(host.Services, stopCts.Token);
         if (synced > 0)
-            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Synced {synced} fingerprint(s) to Drive/Firestore.");
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Fully synced {synced} fingerprint(s) to Drive/Firestore/Storage.");
     }
-    catch (OperationCanceledException) when (stopCts.IsCancellationRequested)
-    {
-        break;
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Worker error: {ex.Message}");
-    }
+    catch (OperationCanceledException) when (stopCts.IsCancellationRequested) { break; }
+    catch (Exception ex) { Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Worker error: {ex.Message}"); }
 
-    try
-    {
-        await Task.Delay(TimeSpan.FromSeconds(10), stopCts.Token);
-    }
-    catch (OperationCanceledException) when (stopCts.IsCancellationRequested)
-    {
-        break;
-    }
+    try { await Task.Delay(TimeSpan.FromSeconds(10), stopCts.Token); }
+    catch (OperationCanceledException) when (stopCts.IsCancellationRequested) { break; }
 }
 
 Console.WriteLine("Cloud Sync Worker stopped.");
 
 static async Task<int> ProcessPendingAsync(IServiceProvider root, CancellationToken ct)
 {
-    List<SyncCandidate> queue;
+    List<Guid> queue;
     int candidateCount;
-    int driveReadyCount = 0;
-    int firestoreReadyCount = 0;
-    int retrySkippedCount = 0;
+    int driveReady = 0, firestoreReady = 0, storageReady = 0;
 
     using (var scope = root.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var retryCutoff = DateTime.UtcNow.AddSeconds(-30);
-
-        var images = await db.FingerprintImages
-            .AsNoTracking()
-            .OrderBy(x => x.CapturedAtUtc)
-            .Take(50)
-            .Select(x => new SyncImageSnapshot(
-                x.Id,
-                x.PersonId,
-                x.FingerCode,
-                x.Position,
-                x.SequenceNo,
-                x.CapturedAtUtc,
-                x.SyncStatus,
-                x.DriveFileId,
-                x.EncryptedFileName))
+        var images = await db.FingerprintImages.AsNoTracking().OrderBy(x => x.CapturedAtUtc).Take(50).ToListAsync(ct);
+        var ids = images.Select(x => x.Id).ToHashSet();
+        var records = await db.CloudSyncRecords.AsNoTracking()
+            .Where(x => ids.Contains(x.FingerprintImageId) && (x.Provider == "GoogleDrive" || x.Provider == "Firestore" || x.Provider == "FirebaseStorage"))
             .ToListAsync(ct);
+        var map = records.GroupBy(x => (x.FingerprintImageId, x.Provider)).ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.LastAttemptAtUtc).First());
 
-        var imageIds = images.Select(x => x.Id).ToHashSet();
-        var records = imageIds.Count == 0
-            ? []
-            : await db.CloudSyncRecords
-                .AsNoTracking()
-                .Where(x => imageIds.Contains(x.FingerprintImageId) && (x.Provider == "GoogleDrive" || x.Provider == "Firestore"))
-                .ToListAsync(ct);
-
-        var recordMap = records
-            .GroupBy(x => (x.FingerprintImageId, x.Provider))
-            .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.LastAttemptAtUtc).First());
-
-        candidateCount = images.Count;
-        queue = new List<SyncCandidate>(images.Count);
-
+        queue = new List<Guid>();
         foreach (var image in images)
         {
-            recordMap.TryGetValue((image.Id, "GoogleDrive"), out var driveRecord);
-            recordMap.TryGetValue((image.Id, "Firestore"), out var firestoreRecord);
-
-            var driveReady = string.Equals(image.SyncStatus, "Synced", StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(image.DriveFileId)
-                && driveRecord?.Status == "Synced";
-            var firestoreReady = firestoreRecord?.Status == "Synced";
-
-            if (driveReady) driveReadyCount++;
-            if (firestoreReady) firestoreReadyCount++;
-
-            if (driveReady && firestoreReady)
-                continue;
-
-            if (firestoreRecord?.Status == "Failed"
-                && firestoreRecord.LastAttemptAtUtc.HasValue
-                && firestoreRecord.LastAttemptAtUtc.Value > retryCutoff
-                && driveReady)
-            {
-                retrySkippedCount++;
-                continue;
-            }
-
-            if (driveRecord?.Status == "Failed"
-                && driveRecord.LastAttemptAtUtc.HasValue
-                && driveRecord.LastAttemptAtUtc.Value > retryCutoff)
-            {
-                retrySkippedCount++;
-                continue;
-            }
-
-            queue.Add(new SyncCandidate(image, driveRecord, firestoreRecord));
+            map.TryGetValue((image.Id, "GoogleDrive"), out var drive);
+            map.TryGetValue((image.Id, "Firestore"), out var fire);
+            map.TryGetValue((image.Id, "FirebaseStorage"), out var storage);
+            var d = image.SyncStatus.Equals("Synced", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(image.DriveFileId) && drive?.Status == "Synced";
+            var f = fire?.Status == "Synced";
+            var s = storage?.Status == "Synced";
+            if (d) driveReady++; if (f) firestoreReady++; if (s) storageReady++;
+            if (!(d && f && s)) queue.Add(image.Id);
         }
+        candidateCount = images.Count;
     }
 
-    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Scan: candidates={candidateCount}, driveSynced={driveReadyCount}, firestoreSynced={firestoreReadyCount}, queued={queue.Count}, retrySkipped={retrySkippedCount}");
+    Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Scan: candidates={candidateCount}, driveSynced={driveReady}, firestoreSynced={firestoreReady}, storageSynced={storageReady}, queued={queue.Count}");
 
-    int synced = 0;
-    foreach (var candidate in queue)
+    var completed = 0;
+    foreach (var id in queue)
     {
         using var scope = root.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var image = await db.FingerprintImages.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (image is null) continue;
+        var person = await db.Persons.AsNoTracking().FirstOrDefaultAsync(x => x.Id == image.PersonId, ct);
+        if (person is null) continue;
 
         try
         {
-            var imageBefore = await db.FingerprintImages.AsNoTracking().FirstOrDefaultAsync(x => x.Id == candidate.Image.Id, ct);
-            if (imageBefore is null)
-                continue;
-
-            if (!string.Equals(imageBefore.SyncStatus, "Synced", StringComparison.OrdinalIgnoreCase)
-                || string.IsNullOrWhiteSpace(imageBefore.DriveFileId))
+            var drive = await db.CloudSyncRecords.FirstOrDefaultAsync(x => x.FingerprintImageId == id && x.Provider == "GoogleDrive", ct);
+            if (drive?.Status != "Synced" || string.IsNullOrWhiteSpace(image.DriveFileId))
             {
-                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Drive sync start: {candidate.Image.Id}");
-                var driveSync = scope.ServiceProvider.GetRequiredService<GoogleDriveSyncService>();
-                await driveSync.SyncFingerprintAsync(candidate.Image.Id, ct);
-                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Drive sync done: {candidate.Image.Id}");
-            }
-
-            var image = await db.FingerprintImages.AsNoTracking().FirstOrDefaultAsync(x => x.Id == candidate.Image.Id, ct);
-            if (image is null || string.IsNullOrWhiteSpace(image.DriveFileId))
-                throw new InvalidOperationException("Fingerprint is not Drive-synced yet.");
-
-            var person = await db.Persons.AsNoTracking().FirstOrDefaultAsync(x => x.Id == image.PersonId, ct)
-                ?? throw new KeyNotFoundException("Person not found.");
-
-            var firestoreRecord = await db.CloudSyncRecords
-                .FirstOrDefaultAsync(x => x.FingerprintImageId == candidate.Image.Id && x.Provider == "Firestore", ct);
-
-            if (firestoreRecord is not null && firestoreRecord.Status == "Synced")
-            {
-                synced++;
-                continue;
-            }
-
-            if (firestoreRecord is null)
-            {
-                firestoreRecord = new CloudSyncRecord
-                {
-                    Id = Guid.NewGuid(),
-                    FingerprintImageId = candidate.Image.Id,
-                    Provider = "Firestore"
-                };
-                db.Set<CloudSyncRecord>().Add(firestoreRecord);
-            }
-
-            firestoreRecord.Status = "Syncing";
-            firestoreRecord.AttemptCount++;
-            firestoreRecord.LastAttemptAtUtc = DateTime.UtcNow;
-            firestoreRecord.LastError = "";
-            await db.SaveChangesAsync(ct);
-
-            try
-            {
-                var firestore = scope.ServiceProvider.GetRequiredService<FirestoreMetadataService>();
-                var link = $"https://drive.google.com/file/d/{image.DriveFileId}/view?usp=drivesdk";
-                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Firestore sync start: {person.PersonCode} / {image.FingerCode} / {image.Position} / #{image.SequenceNo}");
-                await firestore.UpsertFingerprintAsync(person, image, image.DriveFileId, link, ct);
-
-                firestoreRecord.Status = "Synced";
-                firestoreRecord.DriveFileId = image.DriveFileId;
-                firestoreRecord.DriveWebViewLink = link;
-                firestoreRecord.SyncedAtUtc = DateTime.UtcNow;
-                await db.SaveChangesAsync(ct);
-                synced++;
-                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Firestore synced: {person.PersonCode} / {image.FingerCode} / {image.Position} / #{image.SequenceNo}");
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                firestoreRecord.Status = "Failed";
-                firestoreRecord.LastError = ex.Message;
-                await db.SaveChangesAsync(ct);
-                throw;
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Drive sync start: {id}");
+                await scope.ServiceProvider.GetRequiredService<GoogleDriveSyncService>().SyncFingerprintAsync(id, ct);
+                image = await db.FingerprintImages.FirstOrDefaultAsync(x => x.Id == id, ct) ?? image;
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (Exception ex) { Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Drive sync failed: {id}: {ex.Message}"); }
+
+        try
         {
-            throw;
+            var storage = await db.CloudSyncRecords.FirstOrDefaultAsync(x => x.FingerprintImageId == id && x.Provider == "FirebaseStorage", ct);
+            if (storage is null) { storage = new CloudSyncRecord { Id = Guid.NewGuid(), FingerprintImageId = id, Provider = "FirebaseStorage" }; db.CloudSyncRecords.Add(storage); }
+            if (storage.Status != "Synced")
+            {
+                storage.Status = "Syncing"; storage.AttemptCount++; storage.LastAttemptAtUtc = DateTime.UtcNow; storage.LastError = ""; await db.SaveChangesAsync(ct);
+                var result = await scope.ServiceProvider.GetRequiredService<FirebaseStorageSyncService>().UploadAsync(person, image, ct);
+                storage.Status = "Synced"; storage.DriveFileId = result.ObjectName; storage.DriveWebViewLink = result.StorageUri; storage.SyncedAtUtc = DateTime.UtcNow;
+                await db.SaveChangesAsync(ct);
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Firebase Storage synced: {person.PersonCode} / {image.FingerCode} / {image.Position} / #{image.SequenceNo}");
+            }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Sync {candidate.Image.Id} failed: {ex.Message}");
+            var storage = await db.CloudSyncRecords.FirstOrDefaultAsync(x => x.FingerprintImageId == id && x.Provider == "FirebaseStorage", ct);
+            if (storage is null) { storage = new CloudSyncRecord { Id = Guid.NewGuid(), FingerprintImageId = id, Provider = "FirebaseStorage" }; db.CloudSyncRecords.Add(storage); }
+            storage.Status = "Failed"; storage.LastError = ex.Message; storage.LastAttemptAtUtc = DateTime.UtcNow; await db.SaveChangesAsync(ct);
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Firebase Storage failed: {id}: {ex.Message}");
         }
-    }
 
-    return synced;
+        try
+        {
+            image = await db.FingerprintImages.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
+            if (image is null || string.IsNullOrWhiteSpace(image.DriveFileId)) throw new InvalidOperationException("Fingerprint is not Drive-synced yet.");
+            var fire = await db.CloudSyncRecords.FirstOrDefaultAsync(x => x.FingerprintImageId == id && x.Provider == "Firestore", ct);
+            if (fire is null) { fire = new CloudSyncRecord { Id = Guid.NewGuid(), FingerprintImageId = id, Provider = "Firestore" }; db.CloudSyncRecords.Add(fire); }
+            if (fire.Status != "Synced")
+            {
+                fire.Status = "Syncing"; fire.AttemptCount++; fire.LastAttemptAtUtc = DateTime.UtcNow; fire.LastError = ""; await db.SaveChangesAsync(ct);
+                var link = $"https://drive.google.com/file/d/{image.DriveFileId}/view?usp=drivesdk";
+                await scope.ServiceProvider.GetRequiredService<FirestoreMetadataService>().UpsertFingerprintAsync(person, image, image.DriveFileId, link, ct);
+                fire.Status = "Synced"; fire.DriveFileId = image.DriveFileId; fire.DriveWebViewLink = link; fire.SyncedAtUtc = DateTime.UtcNow; await db.SaveChangesAsync(ct);
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Firestore synced: {person.PersonCode} / {image.FingerCode} / {image.Position} / #{image.SequenceNo}");
+            }
+        }
+        catch (Exception ex)
+        {
+            var fire = await db.CloudSyncRecords.FirstOrDefaultAsync(x => x.FingerprintImageId == id && x.Provider == "Firestore", ct);
+            if (fire is null) { fire = new CloudSyncRecord { Id = Guid.NewGuid(), FingerprintImageId = id, Provider = "Firestore" }; db.CloudSyncRecords.Add(fire); }
+            fire.Status = "Failed"; fire.LastError = ex.Message; fire.LastAttemptAtUtc = DateTime.UtcNow; await db.SaveChangesAsync(ct);
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Firestore failed: {id}: {ex.Message}");
+        }
+
+        var finalDrive = await db.CloudSyncRecords.AsNoTracking().FirstOrDefaultAsync(x => x.FingerprintImageId == id && x.Provider == "GoogleDrive", ct);
+        var finalFire = await db.CloudSyncRecords.AsNoTracking().FirstOrDefaultAsync(x => x.FingerprintImageId == id && x.Provider == "Firestore", ct);
+        var finalStorage = await db.CloudSyncRecords.AsNoTracking().FirstOrDefaultAsync(x => x.FingerprintImageId == id && x.Provider == "FirebaseStorage", ct);
+        if (finalDrive?.Status == "Synced" && finalFire?.Status == "Synced" && finalStorage?.Status == "Synced") completed++;
+    }
+    return completed;
 }
 
 static async Task EnsureSchemaAsync(IServiceProvider root, CancellationToken ct)
@@ -261,30 +179,6 @@ static async Task EnsureSchemaAsync(IServiceProvider root, CancellationToken ct)
     using var scope = root.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.EnsureCreatedAsync(ct);
-    await EnsureDriveFileIdColumnAsync(db, ct);
-    await EnsureCloudSyncSchemaAsync(db, ct);
-}
-
-static async Task EnsureDriveFileIdColumnAsync(AppDbContext db, CancellationToken ct)
-{
-    await using var connection = db.Database.GetDbConnection();
-    if (connection.State != System.Data.ConnectionState.Open)
-        await connection.OpenAsync(ct);
-
-    await using var command = connection.CreateCommand();
-    command.CommandText = "PRAGMA table_info(FingerprintImages);";
-    await using var reader = await command.ExecuteReaderAsync(ct);
-    while (await reader.ReadAsync(ct))
-    {
-        if (string.Equals(reader.GetString(1), "DriveFileId", StringComparison.OrdinalIgnoreCase))
-            return;
-    }
-
-    await db.Database.ExecuteSqlRawAsync("ALTER TABLE FingerprintImages ADD COLUMN DriveFileId TEXT NULL;", ct);
-}
-
-static async Task EnsureCloudSyncSchemaAsync(AppDbContext db, CancellationToken ct)
-{
     await db.Database.ExecuteSqlRawAsync(@"
 CREATE TABLE IF NOT EXISTS CloudSyncRecords (
     Id TEXT NOT NULL CONSTRAINT PK_CloudSyncRecords PRIMARY KEY,
@@ -297,27 +191,7 @@ CREATE TABLE IF NOT EXISTS CloudSyncRecords (
     AttemptCount INTEGER NOT NULL,
     LastAttemptAtUtc TEXT NULL,
     SyncedAtUtc TEXT NULL,
-    CONSTRAINT FK_CloudSyncRecords_FingerprintImageId_FingerprintImages
-        FOREIGN KEY (FingerprintImageId) REFERENCES FingerprintImages (Id) ON DELETE CASCADE
+    CONSTRAINT FK_CloudSyncRecords_FingerprintImageId_FingerprintImages FOREIGN KEY (FingerprintImageId) REFERENCES FingerprintImages (Id) ON DELETE CASCADE
 );", ct);
-
-    await db.Database.ExecuteSqlRawAsync(@"
-CREATE UNIQUE INDEX IF NOT EXISTS IX_CloudSyncRecords_FingerprintImageId_Provider
-ON CloudSyncRecords (FingerprintImageId, Provider);", ct);
+    await db.Database.ExecuteSqlRawAsync(@"CREATE UNIQUE INDEX IF NOT EXISTS IX_CloudSyncRecords_FingerprintImageId_Provider ON CloudSyncRecords (FingerprintImageId, Provider);", ct);
 }
-
-sealed record SyncImageSnapshot(
-    Guid Id,
-    Guid PersonId,
-    string FingerCode,
-    string Position,
-    int SequenceNo,
-    DateTime CapturedAtUtc,
-    string SyncStatus,
-    string? DriveFileId,
-    string EncryptedFileName);
-
-sealed record SyncCandidate(
-    SyncImageSnapshot Image,
-    CloudSyncRecord? DriveRecord,
-    CloudSyncRecord? FirestoreRecord);
