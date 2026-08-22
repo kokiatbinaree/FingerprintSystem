@@ -1,0 +1,55 @@
+name: Fix LAN web/API access
+
+on:
+  push:
+    branches:
+      - feature/firebase-foundation-2026-08-22
+
+permissions:
+  contents: write
+
+jobs:
+  patch-lan-config:
+    if: ${{ !contains(github.event.head_commit.message, '[lan-patched]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/firebase-foundation-2026-08-22
+          fetch-depth: 0
+
+      - name: Patch web API URL and backend CORS
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          main = Path('OfflineFingerprint.Collector.Web/src/main.tsx')
+          text = main.read_text(encoding='utf-8')
+          old = "const API='http://localhost:5140';"
+          new = "const API=`${window.location.protocol}//${window.location.hostname}:5140`;"
+          if old in text:
+              text = text.replace(old, new, 1)
+              main.write_text(text, encoding='utf-8')
+
+          program = Path('OfflineFingerprint.Collector/Program.cs')
+          text = program.read_text(encoding='utf-8')
+          old = 'string[] origins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? ["http://127.0.0.1:5173", "http://localhost:5173"];\nbuilder.Services.AddCors(o => o.AddPolicy("Web", p => p.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod()));'
+          new = 'builder.Services.AddCors(o => o.AddPolicy("Web", p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));'
+          if old in text:
+              text = text.replace(old, new, 1)
+              program.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Commit patched files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add OfflineFingerprint.Collector.Web/src/main.tsx OfflineFingerprint.Collector/Program.cs
+          if git diff --cached --quiet; then
+            echo "No changes needed"
+            exit 0
+          fi
+          git commit -m "fix: LAN web/API access [lan-patched]"
+          git push origin HEAD:feature/firebase-foundation-2026-08-22
