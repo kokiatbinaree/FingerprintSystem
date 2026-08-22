@@ -16,11 +16,13 @@ public sealed class FirestoreMetadataService
     private readonly string _projectId;
     private readonly string _credentialsPath;
     private readonly string _tokenPath;
+    private readonly string _storageBucket;
 
     public FirestoreMetadataService(IHttpClientFactory httpClientFactory, IConfiguration configuration)
     {
         _httpClientFactory = httpClientFactory;
         _projectId = configuration["Firebase:ProjectId"] ?? "fingerprintsystemmbt";
+        _storageBucket = configuration["Firebase:BucketName"] ?? "fingerprintsystemmbt.firebasestorage.app";
 
         var configured = configuration["Firebase:CredentialsPath"];
         var candidates = new[]
@@ -42,13 +44,21 @@ public sealed class FirestoreMetadataService
             "FingerprintSystemMBT", "Firestore", "token");
     }
 
-    public async Task<object> UpsertFingerprintAsync(Person person, FingerprintImage image, string driveFileId, string driveWebViewLink, CancellationToken ct = default)
+    public async Task<object> UpsertFingerprintAsync(
+        Person person,
+        FingerprintImage image,
+        string driveFileId,
+        string driveWebViewLink,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(driveFileId))
             throw new ArgumentException("Drive file id is required.", nameof(driveFileId));
 
         var documentId = image.Id.ToString();
         var url = BuildDocumentUrl("fingerprints", documentId);
+        var storageObject = BuildStorageObjectName(person, image);
+        var storageUri = $"gs://{_storageBucket}/{storageObject}";
+
         var body = new
         {
             fields = new Dictionary<string, object>
@@ -64,6 +74,9 @@ public sealed class FirestoreMetadataService
                 ["capturedAtUtc"] = TimestampField(image.CapturedAtUtc),
                 ["driveFileId"] = StringField(driveFileId),
                 ["driveWebViewLink"] = StringField(driveWebViewLink),
+                ["firebaseStorageBucket"] = StringField(_storageBucket),
+                ["firebaseStorageObject"] = StringField(storageObject),
+                ["firebaseStorageUri"] = StringField(storageUri),
                 ["syncStatus"] = StringField("Synced")
             }
         };
@@ -136,6 +149,9 @@ public sealed class FirestoreMetadataService
 
     private string BuildDocumentUrl(string collection, string documentId)
         => $"https://firestore.googleapis.com/v1/projects/{Uri.EscapeDataString(_projectId)}/databases/(default)/documents/{collection}/{Uri.EscapeDataString(documentId)}";
+
+    private static string BuildStorageObjectName(Person person, FingerprintImage image)
+        => $"fingerprints/{person.PersonCode}/{image.Id:N}/{image.FingerCode}-{image.Position}-{image.SequenceNo:00}.png";
 
     private static object StringField(string value) => new { stringValue = value ?? string.Empty };
     private static object IntegerField(int value) => new { integerValue = value.ToString(System.Globalization.CultureInfo.InvariantCulture) };
